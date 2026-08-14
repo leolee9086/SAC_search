@@ -1,4 +1,6 @@
-# cc-search
+# SAC_search
+
+**SAC = Standalone Complex(攻壳机动队术语):没有原型的独立复合体。** 命名梗一脉相承自 [SiyuanAssistantCollection](https://github.com/leolee9086/SiyuanAssistantCollection)(表面读作 "Siyuan Assistant Collection",SAC 实为 Stand Alone Complex 的标准缩写)—— 本仓库延续同一梗:官方没有给第三方插件预留注册面(没有原型),社区插件自发聚合出同类能力(独立复合体)。本仓库不是任何官方项目的子集,而是一个独立成型的复合体 —— 约 180 个免 API key 搜索引擎自发聚合,在 DeepSeek Harness 上作为自包含插件运行。
 
 DeepSeek Harness 多引擎元搜索插件:免 API key 直接调用 DuckDuckGo / Bing / Google / 百度 / 搜狗等约 180 个搜索引擎,并发执行、结果去重聚合、按引擎权重与时效性评分。搜索逻辑移植自 s-code,构建期打包为自包含 ESM bundle,运行时零依赖。
 
@@ -6,8 +8,8 @@ DeepSeek Harness 多引擎元搜索插件:免 API key 直接调用 DuckDuckGo / 
 
 | 分支 | 进度通道 | 会话历史安全 | 运行中逐引擎进度 |
 |---|---|---|---|
-| [`standard`](https://github.com/USER/cc-search/tree/standard) | 纯官方 API,不写任何自定义事件 | ✅ 永远安全 | ❌ 仅静态卡片「正在搜索: q」 |
-| [`progress-events`](https://github.com/USER/cc-search/tree/progress-events) | 自定义事件 `tool/websearch-progress` + `ignorable` 标记 | ⚠️ 依赖官方 `Session.append` 的 ignorable 表面(见下) | ✅ 实时:引擎 x/y、当前引擎、已得条数、最新结果预览 |
+| [`standard`](https://github.com/USER/SAC_search/tree/standard) | 纯官方 API,不写任何自定义事件 | ✅ 永远安全 | ❌ 仅静态卡片「正在搜索: q」 |
+| [`progress-events`](https://github.com/USER/SAC_search/tree/progress-events) | 自定义事件 `tool/websearch-progress` + `ignorable` 标记 | ⚠️ 依赖官方 `Session.append` 的 ignorable 表面(见下) | ✅ 实时:引擎 x/y、当前引擎、已得条数、最新结果预览 |
 
 两个分支的搜索引擎代码、工具 schema、结果渲染完全一致,唯一差异是进度通道(见 `dsh-tool-websearch/lib/index.js` 的 `emitProgress`)。
 
