@@ -1,0 +1,24 @@
+{
+  "name": "dsh-client-ui-websearch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "web_search_meta 工具的运行中进度视图:等同 s-code 的逐引擎进度观测(引擎 x/y、当前引擎、已得条数、最新结果预览)",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib"
+  ]
+}
