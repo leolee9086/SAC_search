@@ -1,17 +1,19 @@
 // lib/index.js — dsh-tool-websearch 插件入口(host 侧)。
-// 注册 web_search_meta(多引擎元搜索)与 web_search_status 两个工具。
+// 注册 web_search_meta(多引擎元搜索,运行中进度通过 session 事件 + sessionProjections
+// 推送到浏览器,由 dsh-client-ui-websearch 渲染)与 web_search_status 两个工具。
 // 搜索逻辑在构建期打包的自包含 bundle(search.bundle.mjs)中,纯 Node 运行,零运行时依赖。
-//
-// 本文件属于 standard 分支:只用官方公共 API(session.append 仅用于官方已知事件),
-// 不向会话日志写入任何自定义事件类型,因此会话历史永远不会被本插件污染。
-// 运行中逐引擎进度通道见 progress-events 分支(tool/websearch-progress 自定义事件)。
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const name = "dsh-tool-websearch";
-const inject = ["tools"];
+const inject = ["tools", "sessionProjections"];
 
 const BUNDLE_URL = new URL("./search.bundle.mjs", import.meta.url);
+
+// 运行中进度投影单元的 key(客户端 useProjection 同名读取)。
+const PROGRESS_KEY = "websearch-progress";
+// 进度事件类型(进 session 日志,驱动投影单元折叠)。
+const PROGRESS_EVENT = "tool/websearch-progress";
 
 // 工具定义的纯对象形态(parameters 已是 JSON Schema),与 dsh-tool-restart 同构。
 function toolDef(toolName, description, parameters, execute, presentCall) {
@@ -67,9 +69,39 @@ const PARAMETERS = {
 const DESCRIPTION =
   "搜索互联网获取最新信息:多引擎元搜索,本地直接调用 DuckDuckGo/Bing/Google/百度/搜狗等免 API key 引擎," +
   "并发执行、结果去重聚合、按引擎权重与时效性评分。适用于知识截止日期之后的信息、当前事件、文档、新闻、代码、学术、购物比价等场景。" +
-  "默认使用全部引擎,一次搜索可能需要较长时间;可用 engines 参数指定子集加速,或用 maxWaitSeconds 设定总超时。";
+  "默认使用全部引擎,一次搜索可能需要较长时间,运行中界面实时显示各引擎进度;可用 engines 参数指定子集加速,或用 maxWaitSeconds 设定总超时。";
 
 function apply(ctx) {
+  // 注册运行中进度投影单元:每个 "tool/websearch-progress" 事件折叠进
+  // { callId -> progress },经 session/projection 帧推送到浏览器供 UI 渲染。
+  // 恒等 schema:值是我们自己构造的纯 JSON,无需额外校验(避免引入 zod 依赖)。
+  const projections = ctx.get("sessionProjections");
+  if (projections) {
+    ctx.effect(() => projections.register({
+      key: PROGRESS_KEY,
+      stateVersion: 1,
+      schema: { parse: (v) => v },
+      init: () => ({}),
+      apply: (state, event) => {
+        if (!event || event.type !== PROGRESS_EVENT) return state;
+        const d = event.data || {};
+        if (typeof d.callId !== "string" || !d.callId) return state;
+        return {
+          ...state,
+          [d.callId]: {
+            done: typeof d.done === "number" ? d.done : 0,
+            total: typeof d.total === "number" ? d.total : 0,
+            current: typeof d.current === "string" ? d.current : "",
+            phase: typeof d.phase === "string" ? d.phase : "start",
+            partialCount: typeof d.partialCount === "number" ? d.partialCount : 0,
+            latestResults: Array.isArray(d.latestResults) ? d.latestResults : [],
+          },
+        };
+      },
+      view: (state) => state,
+    }));
+  }
+
   ctx.tools.register(toolDef(
     "web_search_meta",
     DESCRIPTION,
@@ -82,8 +114,18 @@ function apply(ctx) {
         if (!existsSync(fileURLToPath(BUNDLE_URL))) {
           return "ERROR: 搜索 bundle 缺失(" + fileURLToPath(BUNDLE_URL) + ")。请在插件目录运行 `bun run build` 后重新安装。";
         }
-        // standard 分支:不向会话写入任何自定义事件;运行中无逐引擎进度,
-        // UI 显示 presentCall 静态卡片,搜索完成时返回聚合结果。
+        // 进度通道:每引擎相位 append 到会话事件流,投影单元折叠后推送到 UI
+        const session = exec && exec.agent && exec.agent.session ? exec.agent.session : undefined;
+        const callId = exec && exec.callId ? String(exec.callId) : undefined;
+        const emitProgress = session && callId
+          ? (p) => {
+              try {
+                session.append(PROGRESS_EVENT, { callId, ...p }, { ignorable: true });
+              } catch {
+                /* 进度观测绝不能破坏搜索本身 */
+              }
+            }
+          : undefined;
         const { searchWeb } = await import("./search.bundle.mjs");
         return await searchWeb({
           query: args.query,
@@ -93,7 +135,7 @@ function apply(ctx) {
           lang: args.lang,
           engines: Array.isArray(args.engines) ? args.engines.filter((e) => typeof e === "string") : undefined,
           maxWaitSeconds: typeof args.maxWaitSeconds === "number" && args.maxWaitSeconds > 0 ? args.maxWaitSeconds : undefined,
-        }, exec && exec.signal ? exec.signal : undefined);
+        }, exec && exec.signal ? exec.signal : undefined, emitProgress);
       } catch (error) {
         if (exec && exec.signal && exec.signal.aborted) return "搜索已取消。";
         return "ERROR: " + (error && error.message ? error.message : String(error));
