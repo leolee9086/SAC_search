@@ -1,6 +1,6 @@
 # SAC_search
 
-**SAC = Standalone Complex(攻壳机动队术语):没有原型的独立复合体。** 本仓库不是任何官方项目的子集,而是一个独立成型的复合体 —— 约 180 个免 API key 搜索引擎自发聚合,在 DeepSeek Harness 上作为自包含插件运行。
+**SAC = Standalone Complex(攻壳机动队术语):没有原型的独立复合体。** 命名梗一脉相承自 [SiyuanAssistantCollection](https://github.com/leolee9086/SiyuanAssistantCollection)(表面读作 "Siyuan Assistant Collection",SAC 实为 Stand Alone Complex 的标准缩写)—— 本仓库延续同一梗:官方没有给第三方插件预留注册面(没有原型),社区插件自发聚合出同类能力(独立复合体)。本仓库不是任何官方项目的子集,而是一个独立成型的复合体 —— 约 180 个免 API key 搜索引擎自发聚合,在 DeepSeek Harness 上作为自包含插件运行。
 
 DeepSeek Harness 多引擎元搜索插件:免 API key 直接调用 DuckDuckGo / Bing / Google / 百度 / 搜狗等约 180 个搜索引擎,并发执行、结果去重聚合、按引擎权重与时效性评分。搜索逻辑移植自 s-code,构建期打包为自包含 ESM bundle,运行时零依赖。
 
