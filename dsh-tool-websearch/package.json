@@ -3,11 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "DSH web_search 工具:封装 s-code 的多引擎元搜索模块(纯 Node 运行时,构建期依赖 bun/esbuild)",
+  "description": "DSH 多引擎元搜索插件：Host 工具、浏览器结果卡与代理开关统一由一个 Cordis 包提供",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    }
   },
   "files": [
     "lib"
@@ -18,6 +27,7 @@
   },
   "devDependencies": {
     "effect": "4.0.0-beta.74",
-    "htmlparser2": "8.0.2"
+    "htmlparser2": "8.0.2",
+    "undici": "^6.21.2"
   }
 }

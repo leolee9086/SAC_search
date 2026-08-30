@@ -31,14 +31,13 @@ DeepSeek Harness 的会话日志持久化有一个已知事件类型白名单 `K
 
 ## 安装
 
-两个插件目录放入 `$DSH_HOME/plugins/`(如 `C:\Users\<you>\.dsh\plugins\`)后重启 dsh:
+一个插件目录放入 `$DSH_HOME/plugins/` 后重启 dsh。一个包同时提供 Host 工具、浏览器结果卡和代理开关：
 
 ```
-dsh-tool-websearch/        # host 插件:注册 web_search_meta / web_search_status
-dsh-client-ui-websearch/   # 浏览器插件:进度视图(tool.call.toolview)
+dsh-tool-websearch/  # web_search_meta / web_search_status / web_search_proxy + 浏览器工具卡
 ```
 
-host 插件构建(可选,lib/ 下已含构建产物):
+搜索 bundle 构建(可选，`lib/` 下已含构建产物)：
 
 ```
 bun run build   # bun build src/runner.ts --target=node --format=esm --outfile=lib/search.bundle.mjs

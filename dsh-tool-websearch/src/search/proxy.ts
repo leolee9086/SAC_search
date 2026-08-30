@@ -1,14 +1,8 @@
-/**
- * 系统代理检测模块
- *
- * 自动检测可用的 HTTP/HTTPS 代理，供各搜索引擎使用。
- *
- * 检测顺序：
- * 1. HTTP_PROXY / HTTPS_PROXY / ALL_PROXY 环境变量
- * 2. 探测常见代理地址（如 127.0.0.1:7890）
- * 3. 无可用代理时返回 undefined
- */
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { Effect } from "effect"
+import { Agent, ProxyAgent, setGlobalDispatcher } from "undici"
 
 export interface ProxyConfig {
   readonly http?: string
@@ -16,118 +10,204 @@ export interface ProxyConfig {
   readonly noProxy?: string
 }
 
-/**
- * 从环境变量检测代理配置
- */
-export function detectProxyFromEnv(): ProxyConfig {
-  const http = process.env.HTTP_PROXY || process.env.http_proxy
-  const https = process.env.HTTPS_PROXY || process.env.https_proxy
-  const all = process.env.ALL_PROXY || process.env.all_proxy
-  const noProxy = process.env.NO_PROXY || process.env.no_proxy
+export type ProxySource = "env" | "probe" | "manual" | "none"
 
-  return {
-    http: http || all || undefined,
-    https: https || all || undefined,
-    noProxy,
+export interface ProxyState {
+  readonly enabled: boolean
+  readonly proxyUrl: string
+  readonly source: ProxySource
+  readonly detectedUrl: string
+}
+
+const PROBE_HOSTS = [
+  "http://127.0.0.1:7890",
+  "http://127.0.0.1:1080",
+  "http://127.0.0.1:1081",
+  "http://127.0.0.1:8080",
+]
+const PROBE_TIMEOUT_MS = 5_000
+const NO_PROXY = ["localhost", "127.0.0.1", "::1", ".local"]
+const PLUGIN_DIR = fileURLToPath(new URL("../", import.meta.url))
+const STATE_FILE = join(PLUGIN_DIR, "proxy-state.json")
+
+let state: ProxyState = { enabled: false, proxyUrl: "", source: "none", detectedUrl: "" }
+let dispatcherApplied = false
+let resolving: Promise<void> | undefined
+
+function loadPersisted(): void {
+  try {
+    if (!existsSync(STATE_FILE)) return
+    const raw: unknown = JSON.parse(readFileSync(STATE_FILE, "utf8"))
+    if (raw === null || typeof raw !== "object") return
+    const value = raw as Record<string, unknown>
+    state = {
+      ...state,
+      enabled: value.enabled === true,
+      proxyUrl: typeof value.proxyUrl === "string" ? value.proxyUrl : "",
+      source: value.source === "env" || value.source === "probe" || value.source === "manual" || value.source === "none"
+        ? value.source
+        : "none",
+    }
+  } catch {
+    // Optional persisted state is best-effort; discovery remains available.
   }
 }
 
-/**
- * 探测 127.0.0.1:7890 是否可用（常见代理端口）
- */
-export function probeCommonProxy(): Effect.Effect<ProxyConfig | undefined> {
-  return Effect.gen(function* () {
-    const candidates = [
-      "http://127.0.0.1:7890",
-      "http://127.0.0.1:1080",
-      "http://127.0.0.1:1081",
-      "http://127.0.0.1:8080",
-    ]
+function savePersisted(): void {
+  try {
+    mkdirSync(PLUGIN_DIR, { recursive: true })
+    writeFileSync(STATE_FILE, JSON.stringify({
+      enabled: state.enabled,
+      proxyUrl: state.proxyUrl,
+      source: state.source,
+    }, null, 2), "utf8")
+  } catch (error) {
+    console.error("[websearch-proxy] save proxy-state failed:", error instanceof Error ? error.message : String(error))
+  }
+}
 
-    for (const proxy of candidates) {
-      try {
-        const resp = yield* Effect.promise(() =>
-          fetch(proxy, {
-            method: "CONNECT",
-            signal: AbortSignal.timeout(3000),
-          }),
-        )
-        if (resp.status < 500) {
-          return { http: proxy, https: proxy }
-        }
-      } catch {
-        continue
-      }
+export function detectProxyFromEnv(): ProxyConfig {
+  for (const key of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]) {
+    const value = (process.env[key] || "").trim()
+    if (value) return { http: value, https: value, noProxy: process.env.NO_PROXY || process.env.no_proxy }
+  }
+  return {}
+}
+
+async function proxyReachable(proxyUrl: string): Promise<boolean> {
+  let agent: ProxyAgent | undefined
+  try {
+    agent = new ProxyAgent({ uri: proxyUrl, requestTls: { rejectUnauthorized: false } })
+    const response = await fetch("https://www.gstatic.com/generate_204", {
+      dispatcher: agent,
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    } as RequestInit)
+    return response.status >= 200 && response.status < 400
+  } catch {
+    return false
+  } finally {
+    try {
+      await agent?.close()
+    } catch {
+      // A failed probe has no live proxy state to retain.
+    }
+  }
+}
+
+export function probeCommonProxy(): Effect.Effect<ProxyConfig | undefined> {
+  return Effect.promise(async () => {
+    for (const proxy of PROBE_HOSTS) {
+      if (await proxyReachable(proxy)) return { http: proxy, https: proxy }
     }
     return undefined
   })
 }
 
-/**
- * 获取代理配置：优先环境变量，其次自动探测
- */
+export function detectProxyConfig(): Effect.Effect<ProxyConfig, never, never> {
+  return Effect.gen(function* () {
+    const envProxy = detectProxyFromEnv()
+    if (envProxy.http || envProxy.https) return envProxy
+    const probed = yield* probeCommonProxy().pipe(
+      Effect.catch(() => Effect.succeed(undefined as ProxyConfig | undefined)),
+    )
+    return probed ?? {}
+  })
+}
+
+function applyDispatcher(): void {
+  if (state.enabled && state.proxyUrl) {
+    try {
+      setGlobalDispatcher(new ProxyAgent({ uri: state.proxyUrl, noProxy: NO_PROXY }))
+      dispatcherApplied = true
+      return
+    } catch {
+      // Fall through to the direct dispatcher when the configured proxy is malformed.
+    }
+  }
+  try {
+    setGlobalDispatcher(new Agent())
+  } catch {
+    // Dispatcher installation is advisory; the search request still reports its own error.
+  }
+  dispatcherApplied = true
+}
+
+export async function setProxyEnabled(enabled: boolean, proxyUrl?: string): Promise<ProxyState> {
+  state = { ...state, enabled }
+  if (proxyUrl) {
+    state = { ...state, proxyUrl, source: "manual" }
+  } else if (!state.proxyUrl && state.detectedUrl) {
+    state = { ...state, proxyUrl: state.detectedUrl, source: state.source === "env" ? "env" : "probe" }
+  } else if (!state.proxyUrl && enabled) {
+    const config = await Effect.runPromise(detectProxyConfig())
+    const detected = config.http || config.https || ""
+    if (detected) {
+      state = {
+        ...state,
+        proxyUrl: detected,
+        detectedUrl: detected,
+        source: detectProxyFromEnv().http ? "env" : "probe",
+      }
+    } else {
+      state = { ...state, enabled: false }
+    }
+  }
+  applyDispatcher()
+  savePersisted()
+  return { ...state }
+}
+
+export function toggleProxy(): Promise<ProxyState> {
+  return setProxyEnabled(!state.enabled)
+}
+
+export function getProxyState(): ProxyState {
+  return { ...state }
+}
+
 export function getProxyConfig(): ProxyConfig {
   const envProxy = detectProxyFromEnv()
   if (envProxy.http || envProxy.https) return envProxy
-  return {}
+  return state.proxyUrl ? { http: state.proxyUrl, https: state.proxyUrl } : {}
 }
 
-/**
- * 检测可用的代理配置（不设置环境变量，仅返回配置）。
- *
- * 检测顺序：
- * 1. 已设置的 HTTP_PROXY / HTTPS_PROXY 环境变量
- * 2. 自动探测本地常见代理端口（127.0.0.1:7890 等）
- * 3. 无可用代理时返回空配置
- *
- * 调用方根据返回的配置决定是否调用 {@link applyProxyEnv}。
- */
-export function detectProxyConfig(): Effect.Effect<ProxyConfig, never, never> {
-  return Effect.gen(function* () {
-    // 已有环境变量 → 直接返回（代理已在生效）
-    const envProxy = detectProxyFromEnv()
-    if (envProxy.http || envProxy.https) return envProxy
-
-    // 自动探测本地代理（Effect.catch 将错误转为 never，确保返回类型匹配）
-    return yield* probeCommonProxy().pipe(
-      Effect.catch(() => Effect.succeed(undefined as ProxyConfig | undefined)),
-      Effect.map((probed) => probed ?? {}),
-    )
-  })
-}
-
-/**
- * 将代理配置应用到进程环境变量（Bun fetch 原生支持）。
- *
- * 设置 HTTP_PROXY / HTTPS_PROXY / NO_PROXY，此后所有 Bun fetch 调用
- * 自动通过代理发出 HTTP 请求。
- */
-export function applyProxyEnv(config: ProxyConfig): void {
-  if (config.http && !process.env.HTTP_PROXY) {
-    process.env.HTTP_PROXY = config.http
-  }
-  if (config.https && !process.env.HTTPS_PROXY) {
-    process.env.HTTPS_PROXY = config.https
-  }
-  if (!process.env.NO_PROXY) {
-    process.env.NO_PROXY = "localhost,127.0.0.0/8,.local"
-  }
-}
-
-/**
- * 【便捷方法】检测并立即应用代理配置。
- *
- * 适用于无需用户确认的场景（向后兼容）。
- * 必须在搜索引擎 HTTP 请求之前调用。
- */
-export function configureProxy(): Effect.Effect<ProxyConfig, never, never> {
-  return Effect.gen(function* () {
-    const config = yield* detectProxyConfig()
-    if (config.http || config.https) {
-      applyProxyEnv(config)
+export function ensureApplied(): Promise<void> {
+  if (dispatcherApplied) return Promise.resolve()
+  if (resolving !== undefined) return resolving
+  resolving = (async () => {
+    try {
+      loadPersisted()
+      if (state.enabled && state.proxyUrl) {
+        applyDispatcher()
+        return
+      }
+      const config = await Effect.runPromise(detectProxyConfig())
+      const detected = config.http || config.https || ""
+      if (detected) {
+        state = {
+          ...state,
+          enabled: true,
+          proxyUrl: detected,
+          detectedUrl: detected,
+          source: detectProxyFromEnv().http ? "env" : "probe",
+        }
+        savePersisted()
+      }
+      applyDispatcher()
+    } finally {
+      resolving = undefined
     }
-    return config
+  })()
+  return resolving
+}
+
+export function configureProxy(): Effect.Effect<ProxyConfig> {
+  return Effect.gen(function* () {
+    if (!dispatcherApplied) yield* Effect.promise(() => ensureApplied())
+    return { http: state.proxyUrl || undefined, https: state.proxyUrl || undefined }
   })
 }
 
-export * as Proxy from "./proxy"
+export function applyProxyEnv(config: ProxyConfig): void {
+  void setProxyEnabled(true, config.http || config.https)
+}

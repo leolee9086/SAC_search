@@ -27,6 +27,7 @@ import * as Cache from "./cache"
 import * as QueryIntentModule from "./query-intent"
 import * as PriceCompareModule from "./price-compare"
 import * as RateLimiterModule from "./rate-limiter"
+import * as ProxyModule from "./proxy"
 
-export { Aggregator, Executor, Selector, Engine, Cache, QueryIntentModule as QueryIntent, PriceCompareModule as PriceCompare, RateLimiterModule as RateLimiter }
+export { Aggregator, Executor, Selector, Engine, Cache, QueryIntentModule as QueryIntent, PriceCompareModule as PriceCompare, RateLimiterModule as RateLimiter, ProxyModule as Proxy }
 export * as Search from "."

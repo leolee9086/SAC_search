@@ -9,6 +9,7 @@
 import { Effect } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { Aggregator, Cache, Engine, Executor, QueryIntent, RateLimiter, Selector } from "./search/index";
+import * as Proxy from "./search/proxy";
 
 export interface WebSearchParams {
   query: string;
@@ -77,6 +78,22 @@ export function getStatus(): {
     cache: { size: Cache.globalResultCache.size, hitRate: Cache.globalResultCache.hitRate },
     engines: Object.fromEntries(Executor.getGlobalState().engineStatuses),
   };
+}
+
+export function getProxyState() {
+  return Proxy.getProxyState();
+}
+
+export function setProxyEnabled(enabled: boolean, proxyUrl?: string) {
+  return Proxy.setProxyEnabled(enabled, proxyUrl);
+}
+
+export function toggleProxy() {
+  return Proxy.toggleProxy();
+}
+
+export function ensureProxyApplied() {
+  return Proxy.ensureApplied();
 }
 
 export function searchWeb(params: WebSearchParams, signal?: AbortSignal, onProgress?: (p: SearchProgress) => void): Promise<string> {
@@ -162,5 +179,7 @@ export function searchWeb(params: WebSearchParams, signal?: AbortSignal, onProgr
   if (signal && signal.aborted) {
     return Promise.reject(new Error("search aborted"));
   }
-  return Effect.runPromise(Effect.provide(program, FetchHttpClient.layer), signal ? { signal } : undefined);
+  return Proxy.ensureApplied()
+    .catch(() => undefined)
+    .then(() => Effect.runPromise(Effect.provide(program, FetchHttpClient.layer), signal ? { signal } : undefined));
 }
