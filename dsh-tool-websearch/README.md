@@ -8,6 +8,8 @@
 
 需要 Node.js **22.19.0 或更高版本**、pnpm，以及兼容的 DeepSeek Harness Web 环境。
 
+本包在 [SAC_search](https://github.com/leolee9086/SAC_search) 仓库的 `dsh-tool-websearch/` 子目录里，因此不能用 `pnpm add 'github:leolee9086/SAC_search#v0.1.0'` 这类 git 依赖形式安装（git 依赖要求 `package.json` 在仓库根）。请用下面的 tgz，或把本目录整个放进 `$DSH_HOME/plugins/`。
+
 从 [Releases](https://github.com/leolee9086/SAC_search/releases) 下载 `dsh-tool-websearch-0.1.0.tgz`，在 DSH Web profile 目录（默认 `~/.dsh/profiles/web`，Windows 通常为 `%USERPROFILE%\.dsh\profiles\web`）执行：
 
 ```sh
