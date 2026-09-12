@@ -4,7 +4,15 @@ DSH 工具插件：通过 [Everything](https://www.voidtools.com/)（voidtools�
 
 Everything 的索引是读 NTFS 主文件表建的、并用 USN Journal 增量维护，所以查询是毫秒级、不需要扫描目录。本插件只做"把查询转成 Everything 的 HTTP 请求、把结果整理给模型"，解析和索引都在 Everything 那边。
 
-**每次调用都要审批。** Everything 索引里是整机所有文件名与路径，而且它的 HTTP 接口默认还允许**下载文件**（官方文档原话：Every file and folder indexed by Everything can be searched and downloaded via the web server），所以本插件在 `tools/pre-execute` 这个执行点对自家每个工具调用返回 `ask`：由 DSH 的审批服务向你确认，审批结果会写进会话日志的 `approval/asked` / `approval/decided` 审计事件；审批通道不可用时按 DSH 的约定拒绝（fail closed），插件不会自己放行。用 `config.requireApproval: false` 可以关掉（不建议）。
+**审批跟着会话的文件权限走。** Everything 索引里是整机所有文件名与路径，而且它的 HTTP 接口默认还允许**下载文件**（官方文档原话：Every file and folder indexed by Everything can be searched and downloaded via the web server），所以本插件在 `tools/pre-execute` 这个执行点读当前会话生效的文件权限 `ctx.sandboxPolicy.resolve({ session }).mode`（显式覆盖 > 会话 `sandbox/mode` 事件 > 部署默认），再决定要不要问：
+
+| 会话文件权限 | 行为 |
+|---|---|
+| `danger-full-access`（完全权限） | **直接调用，不进审批**。DSH 把这一档声明为 "Full file access without approval prompts"，此时弹审批只会被自动拒绝 |
+| `workspace-write` / `read-only` | 返回 `{ kind: "ask" }`，由 DSH 的审批服务向你确认 |
+| 读不到权限服务 | 按需要审批处理（fail closed） |
+
+审批结果由 DSH 自己处理：它会写 `approval/asked` / `approval/decided` 审计事件，并把结果映射成放行或拒绝（拒绝、取消、通道不可用都是拒绝）；插件自己不裁决、也不放行任何调用。`config.approvalMode` 可以改成 `always`（任何权限都问）或 `never`（从不问，不建议）。
 
 ## 前置条件：打开 Everything 的 HTTP 服务
 
@@ -69,7 +77,7 @@ dsh-tool-everything/  # everything_search / everything_status
 | `defaultResults` | `50` | 不传 `maxResults` 时返回多少条 |
 | `maxResults` | `500` | 单次返回条数上限 |
 | `maxQueryLength` | `4096` | 查询串长度上限 |
-| `requireApproval` | `true` | 是否每次调用都申请权限 |
+| `approvalMode` | `auto` | `auto`=跟会话文件权限走（完全权限直接调用，其余审批）；`always`=每次都问；`never`=从不问 |
 | `approvalReason` | 内置说明 | 自定义审批理由 |
 
 ## 用法

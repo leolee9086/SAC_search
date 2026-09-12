@@ -20,13 +20,17 @@ import {
 } from "../lib/everything.js";
 import { apply, inject, name } from "../lib/index.js";
 
-/** 造一个只记事的假 ctx。 */
-function fakeCtx() {
+/** 造一个只记事的假 ctx;sandboxMode 给了就假装挂了 sandboxPolicy 服务。 */
+function fakeCtx({ sandboxMode } = {}) {
   const tools = new Map();
   const listeners = new Map();
   const effects = [];
   return {
     tools: { register(def) { tools.set(def.name, def); } },
+    get(serviceName) {
+      if (serviceName !== "sandboxPolicy" || sandboxMode === undefined) return undefined;
+      return { resolve: () => ({ mode: sandboxMode, workspaceRoot: "D:/dev" }) };
+    },
     on(event, handler) {
       const list = listeners.get(event) ?? [];
       list.push(handler);
@@ -40,13 +44,13 @@ function fakeCtx() {
     _tools: tools,
     _listeners: listeners,
     _effects: effects,
-    async _preExecute(toolName) {
+    async _preExecute(toolName, exec = {}) {
       const handlers = listeners.get("tools/pre-execute") ?? [];
       let index = 0;
       const next = async () => {
         const handler = handlers[index++];
         if (!handler) return { kind: "allow" };
-        return handler({ name: toolName }, next);
+        return handler({ name: toolName, agent: { session: { id: "session-test" } }, ...exec }, next);
       };
       return next();
     },
@@ -76,13 +80,14 @@ test("normalizeOptions 给默认值并把越界整数夹回范围", () => {
   const config = normalizeOptions();
   assert.equal(config.host, DEFAULTS.host);
   assert.equal(config.port, DEFAULTS.port);
-  assert.equal(config.requireApproval, true);
+  assert.equal(config.requireApproval, undefined);
+  assert.equal(config.approvalMode, "auto");
   const clamped = normalizeOptions({ port: 99999, maxResults: 0, defaultResults: 100000, host: "  " });
   assert.equal(clamped.port, 65535);
   assert.equal(clamped.maxResults, 1);
   assert.equal(clamped.defaultResults, 1);
   assert.equal(clamped.host, DEFAULTS.host);
-  assert.equal(normalizeOptions({ requireApproval: false }).requireApproval, false);
+  assert.equal(normalizeOptions({ approvalMode: "always" }).approvalMode, "always");
 });
 
 test("fileTimeToUnixMs 把 Everything 的 FILETIME 换成 Unix 毫秒", () => {
@@ -251,26 +256,65 @@ test("插件注册两个工具并导出常规字段", () => {
   assert.deepEqual(ctx._tools.get("everything_search").parameters.required, ["query"]);
 });
 
-test("每个自家工具调用都被要求审批,别的工具原样放行", async () => {
-  const ctx = fakeCtx();
+test("完全权限下直接调用,不进审批", async () => {
+  const ctx = fakeCtx({ sandboxMode: "danger-full-access" });
   apply(ctx);
-  const search = await ctx._preExecute("everything_search");
-  assert.equal(search.kind, "ask");
-  assert.match(search.reason, /everything_search/);
-  assert.match(search.reason, /Everything 索引/);
-  assert.equal((await ctx._preExecute("everything_status")).kind, "ask");
-  assert.deepEqual(await ctx._preExecute("bash"), { kind: "allow" });
+  assert.deepEqual(await ctx._preExecute("everything_search"), { kind: "allow" });
+  assert.deepEqual(await ctx._preExecute("everything_status"), { kind: "allow" });
 });
 
-test("可以把审批关掉(默认是开)", async () => {
+test("工作区/只读权限下要审批,理由里带上当前权限", async () => {
+  for (const mode of ["workspace-write", "read-only"]) {
+    const ctx = fakeCtx({ sandboxMode: mode });
+    apply(ctx);
+    const decision = await ctx._preExecute("everything_search");
+    assert.equal(decision.kind, "ask", mode);
+    assert.match(decision.reason, new RegExp(`当前文件权限 ${mode}`));
+    assert.match(decision.reason, /everything_search/);
+    assert.match(decision.reason, /Everything 索引/);
+  }
+});
+
+test("读不到权限服务时按需要审批处理(fail closed)", async () => {
   const ctx = fakeCtx();
-  apply(ctx, { requireApproval: false });
-  assert.equal((await ctx._preExecute("everything_search")).kind, "allow");
-  assert.equal((ctx._listeners.get("tools/pre-execute") ?? []).length, 0);
+  apply(ctx);
+  const decision = await ctx._preExecute("everything_search");
+  assert.equal(decision.kind, "ask");
+  assert.match(decision.reason, /当前文件权限未知/);
+});
+
+test("别的工具一律原样放行", async () => {
+  for (const sandboxMode of [undefined, "workspace-write", "danger-full-access"]) {
+    const ctx = fakeCtx({ sandboxMode });
+    apply(ctx);
+    assert.deepEqual(await ctx._preExecute("bash"), { kind: "allow" });
+    assert.deepEqual(await ctx._preExecute("everything_search_other"), { kind: "allow" });
+  }
+});
+
+test("approvalMode=always 时完全权限也要审批", async () => {
+  const ctx = fakeCtx({ sandboxMode: "danger-full-access" });
+  apply(ctx, { approvalMode: "always" });
+  assert.equal((await ctx._preExecute("everything_search")).kind, "ask");
+});
+
+test("approvalMode=never 时完全不注册审批监听", async () => {
+  for (const sandboxMode of [undefined, "workspace-write", "danger-full-access"]) {
+    const ctx = fakeCtx({ sandboxMode });
+    apply(ctx, { approvalMode: "never" });
+    assert.equal((await ctx._preExecute("everything_search")).kind, "allow");
+    assert.equal((ctx._listeners.get("tools/pre-execute") ?? []).length, 0);
+  }
+});
+
+test("非法的 approvalMode 落回 auto", () => {
+  assert.equal(normalizeOptions({ approvalMode: "yolo" }).approvalMode, "auto");
+  assert.equal(normalizeOptions({ approvalMode: "always" }).approvalMode, "always");
+  assert.equal(normalizeOptions().approvalMode, "auto");
 });
 
 test("审批自定义理由会带进 ask", async () => {
-  const ctx = fakeCtx();
+  const ctx = fakeCtx({ sandboxMode: "workspace-write" });
   apply(ctx, { approvalReason: "自定义理由" });
   assert.match((await ctx._preExecute("everything_search")).reason, /^自定义理由/);
 });
@@ -320,7 +364,8 @@ test("everything_status 报告接口与限制", async () => {
     const def = ctx._tools.get("everything_status");
     const text = await def.execute({}, {});
     assert.match(text, /http:\/\/127\.0\.0\.1:8080/);
-    assert.match(text, /每次调用需审批: 是/);
+    assert.match(text, /审批档位: auto/);
+    assert.match(text, /本会话生效的文件权限: 未知/);
     assert.match(text, /默认 20 条,最多 100 条/);
     const probed = await def.execute({ probe: "Everything.exe" }, {});
     assert.match(probed, /探针「Everything\.exe」命中 4 条/);

@@ -21,9 +21,18 @@ export const DEFAULTS = {
   defaultResults: 50,
   maxResults: 500,
   maxQueryLength: 4096,
-  requireApproval: true,
+  approvalMode: "auto",
   approvalReason: "",
 };
+
+/**
+ * 审批档位:
+ *   auto   跟着会话的文件权限走——完全权限(danger-full-access)直接调用,
+ *          read-only / workspace-write 需要审批。这是默认。
+ *   always 每次调用都要审批。
+ *   never  从不审批(不推荐:Everything 索引包含整机文件名)。
+ */
+export const APPROVAL_MODES = ["auto", "always", "never"];
 
 /** Everything 允许的排序字段(HTTP 接口的 sort 参数)。 */
 export const SORT_FIELDS = [
@@ -56,7 +65,7 @@ export function normalizeOptions(raw = {}) {
     defaultResults: number(source.defaultResults, DEFAULTS.defaultResults, 1, maxResults),
     maxResults,
     maxQueryLength: number(source.maxQueryLength, DEFAULTS.maxQueryLength, 16, 65536),
-    requireApproval: source.requireApproval !== false,
+    approvalMode: APPROVAL_MODES.includes(source.approvalMode) ? source.approvalMode : DEFAULTS.approvalMode,
     approvalReason: typeof source.approvalReason === "string" ? source.approvalReason : "",
   };
 }

@@ -7,6 +7,7 @@
 // 走审批、写 approval/asked + approval/decided 审计事件,并把结果映射成放行或拒绝。
 // 审批不可用时按 DSH 的约定 fail closed(拒绝),插件不自己放行。
 import {
+  APPROVAL_MODES,
   DEFAULTS,
   SORT_FIELDS,
   formatResults,
@@ -23,7 +24,37 @@ const TOOL_STATUS = "everything_status";
 const OWNED_TOOLS = [TOOL_SEARCH, TOOL_STATUS];
 
 const DEFAULT_APPROVAL_REASON =
-  "Everything 索引包含整机文件名与路径,每次查询都要你确认";
+  "Everything 索引包含整机文件名与路径,这次查询要你确认";
+
+/** 完全权限档:DSH 声明为无需审批,工具直接调用才是正常行为。 */
+const FULL_ACCESS_MODE = "danger-full-access";
+
+/**
+ * 读会话当前生效的文件权限(显式覆盖 > 会话 sandbox/mode 事件 > 部署默认)。
+ * 读不到(部署里没挂 sandboxPolicy)时返回 undefined,调用方按"非完全权限"处理。
+ */
+export function currentSandboxMode(ctx, exec) {
+  const policy = typeof ctx.get === "function" ? ctx.get("sandboxPolicy") : undefined;
+  if (!policy || typeof policy.resolve !== "function") return undefined;
+  const session = exec && exec.agent ? exec.agent.session : undefined;
+  try {
+    return policy.resolve(session ? { session } : {}).mode;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 决定这次调用要不要审批。
+ * 默认 auto:完全权限直接放行,其余权限档要审批;读不到权限时按需要审批处理(fail closed)。
+ * @returns {{ask: boolean, mode: string|undefined}} ask 为 false 表示不必问。
+ */
+export function decideApproval(ctx, exec, config) {
+  const mode = currentSandboxMode(ctx, exec);
+  if (config.approvalMode === "never") return { ask: false, mode };
+  if (config.approvalMode === "always") return { ask: true, mode };
+  return { ask: mode !== FULL_ACCESS_MODE, mode };
+}
 
 // 工具定义的纯对象形态(与 dsh-tool-websearch / dsh-tool-restart 同构)。
 function toolDef(toolName, description, parameters, execute, presentCall) {
@@ -84,7 +115,7 @@ const SEARCH_PARAMETERS = {
 const SEARCH_DESCRIPTION =
   "用 Everything 查询本机文件索引(毫秒级,免扫描):按文件名、路径、扩展名、大小、修改时间等检索整机文件。"
   + "query 走 Everything 自己的搜索语法,插件不解析它;path/ext 只是拼进查询的便捷参数。"
-  + "这个工具的每次调用都需要用户审批。";
+  + "索引含整机文件名,因此在工作区/只读权限下每次调用都需要用户审批,完全文件权限下直接调用。";
 
 const STATUS_PARAMETERS = {
   type: "object",
@@ -122,15 +153,18 @@ export function composeQuery(args) {
 function apply(ctx, rawConfig = {}) {
   const config = normalizeOptions(rawConfig);
 
-  // 每次调用都申请权限:pre-execute 是工具箱自己的执行点,
-  // 这里只对自家工具返回 ask,其余工具交给下一个监听者。
-  if (config.requireApproval) {
-    const reason = config.approvalReason || DEFAULT_APPROVAL_REASON;
-    ctx.effect(() => ctx.on("tools/pre-execute", async (exec, next) => {
+  // 审批按会话的权限档走:完全权限直接调用,工作区/只读权限才申请。
+  // ctx.on() 本身就把监听器挂在本插件 fiber 上(卸载自动摘除),不需要再包一层 ctx.effect。
+  if (config.approvalMode !== "never") {
+    const baseReason = config.approvalReason || DEFAULT_APPROVAL_REASON;
+    ctx.on("tools/pre-execute", async (exec, next) => {
       const toolName = exec && typeof exec.name === "string" ? exec.name : "";
       if (!OWNED_TOOLS.includes(toolName)) return next();
-      return { kind: "ask", reason: `${reason}(${toolName})` };
-    }), "dsh-tool-everything: per-call approval");
+      const decision = decideApproval(ctx, exec, config);
+      if (!decision.ask) return next();
+      const where = decision.mode ? `当前文件权限 ${decision.mode}` : "当前文件权限未知";
+      return { kind: "ask", reason: `${baseReason}(${where};${toolName})` };
+    });
   }
 
   ctx.tools.register(toolDef(
@@ -184,7 +218,8 @@ function apply(ctx, rawConfig = {}) {
         }, { signal: exec && exec.signal ? exec.signal : undefined });
         const lines = [
           `Everything HTTP 接口可达: http://${config.host}:${config.port}`,
-          `每次调用需审批: ${config.requireApproval ? "是" : "否"}`,
+          `审批档位: ${config.approvalMode}${config.approvalMode === "auto" ? "(完全权限直接调用,工作区/只读权限需审批)" : ""}`,
+          `本会话生效的文件权限: ${currentSandboxMode(ctx, exec) ?? "未知"}`,
           `结果上限: 默认 ${config.defaultResults} 条,最多 ${config.maxResults} 条;超时 ${config.timeoutMs}ms`,
         ];
         if (typeof args?.probe === "string" && args.probe.trim()) {
