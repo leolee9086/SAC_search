@@ -1,5 +1,6 @@
 node_modules/
 *.bak-*
 *.log
+*.tgz
 .DS_Store
 dsh-tool-websearch/proxy-state.json
