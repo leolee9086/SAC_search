@@ -162,12 +162,16 @@ test("带空格的查询经 URL 编码后仍能原样还原", () => {
   assert.match(url.search, /\+/);
 });
 
-test("composeQuery 把 path/ext 拼成 Everything 语法", () => {
+test("composeQuery 把 path/ext 拼成 Everything 语法,并给 path 补尾部分隔符", () => {
   assert.equal(composeQuery({ query: "报价" }), "报价");
   assert.equal(composeQuery({ query: "报价", ext: ".psd" }), "报价 ext:psd");
   assert.equal(composeQuery({ query: "报价", ext: "psd;png" }), "报价 ext:psd;png");
-  assert.equal(composeQuery({ query: "报价", path: "D:\\工作\\图" }), "报价 path:D:\\工作\\图");
-  assert.equal(composeQuery({ query: "报价", path: "D:\\我的 图\\" }), "报价 path:\"D:\\我的 图\"");
+  // 限定范围:补尾反斜杠,否则 path:"C:\Program Files" 会连带 C:\Program Files (x86)
+  // (实测 317684 -> 283886);值一律加引号。
+  assert.equal(composeQuery({ query: "报价", path: "D:\\工作\\图" }), '报价 path:"D:\\工作\\图\\"');
+  // 已经带分隔符就不重复补,正斜杠也算分隔符。
+  assert.equal(composeQuery({ query: "报价", path: "D:\\工作\\" }), '报价 path:"D:\\工作\\"');
+  assert.equal(composeQuery({ query: "报价", path: "D:/工作/" }), '报价 path:"D:/工作/"');
   assert.equal(composeQuery({}), "");
 });
 

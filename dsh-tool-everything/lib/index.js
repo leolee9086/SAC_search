@@ -99,12 +99,14 @@ const SEARCH_PARAMETERS = {
   properties: {
     query: {
       type: "string",
-      description: "Everything 搜索语法(必填)。支持 name:/path:/ext:/size:/dm: 等一切 Everything 语法,"
-        + "例如 'ext:psd 效果图'、'path:\"D:\\工作\" 报价'。",
+      description: "Everything 搜索语法(必填)。实测 1.4 的 HTTP 接口支持 ext:/path:/folder:/size:/dm:/file: 等函数,"
+        + "例如 'ext:psd 效果图'、'path:\"D:\\工作\\\" 报价'、'size:>1mb dm:today'。"
+        + "注意 name: 函数经 HTTP 接口无效(返回 0),要按文件名找就直接写文件名。",
     },
     path: {
       type: "string",
-      description: "可选,只在这个目录下找。会作为 path:\"…\" 追加到查询上(Everything 的 HTTP 接口没有独立的目录过滤参数)。",
+      description: "可选,把搜索限定在这个目录里。会作为 path:\"…\\\" 追加到查询上,并自动补尾部分隔符,"
+        + "所以 D:\\dev 不会连带匹配 D:\\dev2 这类同前缀目录(Everything 1.4 的 HTTP 接口本身没有目录过滤参数)。",
     },
     ext: {
       type: "string",
@@ -161,8 +163,10 @@ export function composeQuery(args) {
   if (query) parts.push(query);
   const dir = typeof args?.path === "string" ? args.path.trim() : "";
   if (dir) {
-    const normalized = dir.replace(/[\\/]+$/, "");
-    parts.push(normalized.includes(" ") ? `path:"${normalized}"` : `path:${normalized}`);
+    // path: 是"整条路径里含这段文本"的匹配,不补尾部分隔符会把同前缀的兄弟目录一起带进来
+    // (实测 path:"C:\Program Files" 317684 条,补成 path:"C:\Program Files\" 后 283886 条)。
+    const scoped = /[\\/]$/.test(dir) ? dir : `${dir}\\`;
+    parts.push(`path:"${scoped}"`);
   }
   const ext = typeof args?.ext === "string" ? args.ext.trim() : "";
   if (ext) {

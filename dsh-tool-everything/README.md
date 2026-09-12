@@ -97,7 +97,16 @@ everything_search(query="^方案.*\\.pdf$", regex=true, sort="date_modified", as
 everything_status(probe="Everything.exe")
 ```
 
-`query` 走 **Everything 自己的搜索语法**（`name:`、`path:`、`ext:`、`size:`、`dm:`、`file:`、`folder:` 等），插件不解析它。`path` 与 `ext` 只是把 `path:"…"`、`ext:…` 拼进查询的便捷参数——Everything 1.4 的 HTTP 接口并不认独立的目录/扩展名过滤参数。
+`query` 走 **Everything 自己的搜索语法**，插件不解析它。实测（Everything 1.4.1.1032 的 HTTP 接口）各函数的有效性：
+
+| 函数 | 实测结果 |
+|---|---|
+| `ext:` `path:` `folder:` `size:` `dm:` `file:` | 有效 |
+| `name:` | **无效**——`name:package.json`、`name:"package.json"`、`name:package` 全部返回 0 条；要按文件名找就直接写文件名 |
+
+`path` 与 `ext` 是拼进查询的便捷参数（1.4 的 HTTP 接口不认独立的目录/扩展名过滤参数）：`ext` 拼成 `ext:psd`（多个用 `;` 分隔），`path` 拼成 `path:"…\"`。
+
+**限定范围靠 `path` 参数**，末尾那个反斜杠是关键：`path:` 是"整条路径里含这段文本"的匹配，不补尾分隔符会把同前缀的兄弟目录一起带进来——实测 `path:"C:\Program Files"` 317684 条，补成 `path:"C:\Program Files\"` 后 283886 条（排掉了 `C:\Program Files (x86)`）。插件会自动补，已经带 `\` 或 `/` 的路径不会重复补。
 
 ## 实现要点（都是实测出来的）
 
@@ -105,7 +114,7 @@ everything_status(probe="Everything.exe")
 - **`date_modified` 是 Windows FILETIME**（1601 年起的 100 纳秒数），不是 Unix 时间戳，要 `/10000 - 11644473600000` 才是毫秒。直接当毫秒用会得到 1970 年。
 - `date_created` / `date_accessed` 默认拿不到：Everything 只在勾选了"索引创建时间/访问时间"时才返回，所以插件不请求它们。
 - 排序用 `sort=` + `ascending=`，翻页用 `offset=`，匹配开关用 `case=` / `wholeword=` / `regex=`。
-- HTTP 接口不提供"按目录过滤""按大小区间过滤"的参数，这类条件写进 `query`。
+- HTTP 接口不提供"按目录过滤""按大小区间过滤"的参数，这类条件写进 `query`（目录用 `path` 参数，会自动补尾部分隔符收紧范围）。
 
 ## 已知边界
 

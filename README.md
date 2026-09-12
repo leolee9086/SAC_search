@@ -7,7 +7,7 @@
 | 插件 | 做什么 |
 |---|---|
 | [`dsh-tool-websearch/`](./dsh-tool-websearch) | **互联网元搜索**：免 API key 直接调用 DuckDuckGo / Bing / Google / 百度 / 搜狗 等约 200 个搜索引擎，并发执行、结果去重聚合、按引擎权重与时效性评分。搜索实现移植自 s-code，构建期打包为自包含 ESM bundle，运行时零依赖。 |
-| [`dsh-tool-everything/`](./dsh-tool-everything) | **本机文件索引检索**：查询 [Everything](https://www.voidtools.com/) 自带的 HTTP 接口，毫秒级按文件名、路径、扩展名、大小、修改时间检索整机文件。索引包含整机文件名，**每次调用都要过 DSH 审批**；零运行时依赖。 |
+| [`dsh-tool-everything/`](./dsh-tool-everything) | **本机文件索引检索**：查询 [Everything](https://www.voidtools.com/) 自带的 HTTP 接口，毫秒级按文件名、路径、扩展名、大小、修改时间检索整机文件；`path` 参数可把范围限定在某个目录（自动补尾分隔符，不会连带同前缀的兄弟目录）。索引含整机文件名，所以**审批跟着会话文件权限走**：完全权限直接调用，工作区/只读权限每次调用都过 DSH 审批，审批理由里带本次查询的关键词。零运行时依赖。 |
 
 两个插件都只通过运行时的 Cordis 服务契约与 DSH 交互，不 import 任何 DSH 包。
 
@@ -37,7 +37,22 @@ pnpm add ./dsh-tool-websearch-0.1.0.tgz
 - name: dsh-tool-websearch
 ```
 
-重载插件或重启 DSH 后刷新浏览器页面。开发时也可以把 `dsh-tool-websearch/` 整个目录放进 `$DSH_HOME/plugins/` 后重启 dsh。
+重载插件或重启 DSH 后刷新浏览器页面。开发时也可以把插件目录整个放进 `$DSH_HOME/plugins/` 后重启 dsh。
+
+两个插件各有自己的前置条件：
+
+- `dsh-tool-websearch` 开箱即用，免 API key。
+- `dsh-tool-everything` 需要本机装好 Everything 并**打开它的 HTTP 服务**（默认是关的），只绑回环、关掉文件下载：
+
+  ```ini
+  ; %APPDATA%\Everything\Everything.ini(改前请先退出 Everything)
+  http_server_enabled=1
+  http_server_bindings=127.0.0.1
+  http_server_port=8080
+  http_server_allow_file_download=0
+  ```
+
+  端口要和插件 `config.port` 一致。细节见 [`dsh-tool-everything/README.md`](./dsh-tool-everything/README.md)。
 
 ## 用法
 
