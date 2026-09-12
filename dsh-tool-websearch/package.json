@@ -1,31 +1,58 @@
 {
   "name": "dsh-tool-websearch",
   "version": "0.1.0",
-  "private": true,
+  "description": "DSH 多引擎元搜索插件：免 API key 并发调用约 200 个搜索引擎，提供 web_search_meta / web_search_status / web_search_proxy 三个 Host 工具与浏览器结果卡",
+  "author": "leolee9086",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leolee9086/SAC_search.git",
+    "directory": "dsh-tool-websearch"
+  },
+  "homepage": "https://github.com/leolee9086/SAC_search#readme",
+  "bugs": {
+    "url": "https://github.com/leolee9086/SAC_search/issues"
+  },
   "type": "module",
-  "description": "DSH 多引擎元搜索插件：Host 工具、浏览器结果卡与代理开关统一由一个 Cordis 包提供",
-  "main": "lib/index.js",
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "cordis",
+    "search",
+    "metasearch",
+    "web-search"
+  ],
+  "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bun build src/runner.ts --target=node --format=esm --outfile=lib/search.bundle.mjs",
+    "test": "node --experimental-test-module-mocks --test test/*.test.mjs",
+    "check": "node --check lib/index.js && node --check lib/progress.js && node --check lib/client.js",
+    "prepack": "pnpm run test && pnpm run build"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-runtime"
-      ],
+      "inject": [],
       "platform": "web"
     }
   },
-  "files": [
-    "lib"
-  ],
   "dependencies": {},
-  "scripts": {
-    "build": "bun build src/runner.ts --target=node --format=esm --outfile=lib/search.bundle.mjs",
-    "test": "node --experimental-test-module-mocks --test test/*.test.mjs"
-  },
   "devDependencies": {
     "effect": "4.0.0-beta.74",
     "htmlparser2": "8.0.2",
