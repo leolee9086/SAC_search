@@ -14,6 +14,14 @@ Everything 的索引是读 NTFS 主文件表建的、并用 USN Journal 增量�
 
 审批结果由 DSH 自己处理：它会写 `approval/asked` / `approval/decided` 审计事件，并把结果映射成放行或拒绝（拒绝、取消、通道不可用都是拒绝）；插件自己不裁决、也不放行任何调用。`config.approvalMode` 可以改成 `always`（任何权限都问）或 `never`（从不问，不建议）。
 
+审批理由把**这次调用的关键词放在最前面**，让人看得见要搜什么再决定：
+
+```
+everything_search query="效果图" path="D:\工作" ext="psd" maxResults=20 · 读取 Everything 的整机文件名索引 · 当前文件权限 workspace-write
+```
+
+摘要包含 `query`/`path`/`ext`/`probe`/`maxResults`/`offset`/`sort` 与 `regex`/`matchCase`/`wholeWord`/`ascending` 开关，没有参数时写"无参数"；整条理由超过 400 字会截断，避免把弹窗撑爆。
+
 ## 前置条件：打开 Everything 的 HTTP 服务
 
 插件本身零运行时依赖，但要求 Everything 那边把 HTTP 服务打开（默认是关的）。在 Everything 里勾：

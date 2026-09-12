@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import {
   DEFAULTS,
   composeQuery,
+  describeCall,
 } from "../lib/index.js";
 import {
   fileTimeToUnixMs,
@@ -271,7 +272,7 @@ test("工作区/只读权限下要审批,理由里带上当前权限", async () 
     assert.equal(decision.kind, "ask", mode);
     assert.match(decision.reason, new RegExp(`当前文件权限 ${mode}`));
     assert.match(decision.reason, /everything_search/);
-    assert.match(decision.reason, /Everything 索引/);
+    assert.match(decision.reason, /整机文件名索引/);
   }
 });
 
@@ -313,10 +314,46 @@ test("非法的 approvalMode 落回 auto", () => {
   assert.equal(normalizeOptions().approvalMode, "auto");
 });
 
+test("审批理由里带上这次调用的关键词", async () => {
+  const ctx = fakeCtx({ sandboxMode: "workspace-write" });
+  apply(ctx);
+  const decision = await ctx._preExecute("everything_search", {
+    arguments: { query: "效果图", path: "D:\\工作", ext: "psd", maxResults: 20, regex: true },
+  });
+  assert.equal(decision.kind, "ask");
+  assert.match(decision.reason, /^everything_search /);
+  assert.match(decision.reason, /query="效果图"/);
+  assert.match(decision.reason, /path="D:\\\\工作"/);
+  assert.match(decision.reason, /ext="psd"/);
+  assert.match(decision.reason, /maxResults=20/);
+  assert.match(decision.reason, /regex/);
+  assert.match(decision.reason, /当前文件权限 workspace-write/);
+});
+
+test("describeCall 只摘已知字段,什么都不给时说明无参数", () => {
+  assert.equal(describeCall("everything_status", {}), "无参数");
+  assert.equal(describeCall("everything_search", undefined), "无参数");
+  assert.equal(describeCall("everything_search", { query: "a", sort: "size", ascending: true }), 'query="a" sort=size ascending');
+  assert.equal(describeCall("everything_status", { probe: "Everything.exe" }), 'probe="Everything.exe"');
+  // 空字符串与非法数字不算参数。
+  assert.equal(describeCall("everything_search", { query: "  ", maxResults: Number.NaN }), "无参数");
+});
+
+test("理由过长时截断,不把弹窗撑爆", async () => {
+  const ctx = fakeCtx({ sandboxMode: "read-only" });
+  apply(ctx);
+  const decision = await ctx._preExecute("everything_search", { arguments: { query: "x".repeat(2000) } });
+  assert.equal(decision.kind, "ask");
+  assert.ok(decision.reason.length <= 401, `理由长度 ${decision.reason.length}`);
+  assert.match(decision.reason, /…$/);
+});
+
 test("审批自定义理由会带进 ask", async () => {
   const ctx = fakeCtx({ sandboxMode: "workspace-write" });
   apply(ctx, { approvalReason: "自定义理由" });
-  assert.match((await ctx._preExecute("everything_search")).reason, /^自定义理由/);
+  const decision = await ctx._preExecute("everything_search");
+  assert.match(decision.reason, /自定义理由/);
+  assert.match(decision.reason, /^everything_search 无参数 · 自定义理由/);
 });
 
 test("everything_search 走配置的端口并返回文本", async () => {

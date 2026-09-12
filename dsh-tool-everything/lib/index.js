@@ -23,8 +23,31 @@ const TOOL_SEARCH = "everything_search";
 const TOOL_STATUS = "everything_status";
 const OWNED_TOOLS = [TOOL_SEARCH, TOOL_STATUS];
 
-const DEFAULT_APPROVAL_REASON =
-  "Everything 索引包含整机文件名与路径,这次查询要你确认";
+const DEFAULT_APPROVAL_REASON = "读取 Everything 的整机文件名索引";
+
+/**
+ * 把这次调用的关键参数摘成审批理由的一部分——审批的人得先看见"搜什么"再决定。
+ * @param toolName - 工具名。
+ * @param args - exec.arguments(已解析的调用参数)。
+ * @returns 形如 `query="效果图" path="D:\工作" ext=psd maxResults=20` 的摘要。
+ */
+export function describeCall(toolName, args) {
+  const input = args && typeof args === "object" ? args : {};
+  const parts = [];
+  for (const key of ["query", "path", "ext", "probe"]) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim()) parts.push(`${key}=${JSON.stringify(value)}`);
+  }
+  for (const key of ["maxResults", "offset"]) {
+    const value = input[key];
+    if (typeof value === "number" && Number.isFinite(value)) parts.push(`${key}=${value}`);
+  }
+  if (typeof input.sort === "string" && input.sort) parts.push(`sort=${input.sort}`);
+  for (const flag of ["ascending", "regex", "matchCase", "wholeWord"]) {
+    if (input[flag] === true) parts.push(flag);
+  }
+  return parts.length > 0 ? parts.join(" ") : "无参数";
+}
 
 /** 完全权限档:DSH 声明为无需审批,工具直接调用才是正常行为。 */
 const FULL_ACCESS_MODE = "danger-full-access";
@@ -163,7 +186,9 @@ function apply(ctx, rawConfig = {}) {
       const decision = decideApproval(ctx, exec, config);
       if (!decision.ask) return next();
       const where = decision.mode ? `当前文件权限 ${decision.mode}` : "当前文件权限未知";
-      return { kind: "ask", reason: `${baseReason}(${where};${toolName})` };
+      // 关键词在前:审批的人先看到搜什么,再看通用说明与权限档。
+      const reason = `${toolName} ${describeCall(toolName, exec.arguments)} · ${baseReason} · ${where}`;
+      return { kind: "ask", reason: reason.length > 400 ? `${reason.slice(0, 400)}…` : reason };
     });
   }
 
