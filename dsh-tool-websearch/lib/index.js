@@ -3,16 +3,13 @@
 // 由同一包的 ./client entry 渲染。搜索逻辑在构建期打包的自包含 bundle 中。
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createProgressStore } from "./progress.js";
 
 const name = "dsh-tool-websearch";
-const inject = ["tools", "sessionProjections", "webServer"];
+const inject = ["tools", "webServer", "connection"];
 
 const BUNDLE_URL = new URL("./search.bundle.mjs", import.meta.url);
-
-// 运行中进度投影单元的 key(客户端 useProjection 同名读取)。
-const PROGRESS_KEY = "websearch-progress";
-// 进度事件类型(进 session 日志,驱动投影单元折叠)。
-const PROGRESS_EVENT = "tool/websearch-progress";
+const PROGRESS_API = "/api/dsh-websearch/progress";
 const PROXY_API_BASE = "/api/dsh-websearch/proxy";
 
 // 工具定义的纯对象形态(parameters 已是 JSON Schema),与 dsh-tool-restart 同构。
@@ -72,57 +69,56 @@ const DESCRIPTION =
   "默认使用全部引擎,一次搜索可能需要较长时间,运行中界面实时显示各引擎进度;可用 engines 参数指定子集加速,或用 maxWaitSeconds 设定总超时。";
 
 function apply(ctx) {
-  // 注册运行中进度投影单元:每个 "tool/websearch-progress" 事件折叠进
-  // { callId -> progress },经 session/projection 帧推送到浏览器供 UI 渲染。
-  // 恒等 schema:值是我们自己构造的纯 JSON,无需额外校验(避免引入 zod 依赖)。
-  const projections = ctx.get("sessionProjections");
-  if (projections) {
-    ctx.effect(() => projections.register({
-      key: PROGRESS_KEY,
-      stateVersion: 1,
-      schema: { parse: (v) => v },
-      init: () => ({}),
-      apply: (state, event) => {
-        if (!event || event.type !== PROGRESS_EVENT) return state;
-        const d = event.data || {};
-        if (typeof d.callId !== "string" || !d.callId) return state;
-        return {
-          ...state,
-          [d.callId]: {
-            done: typeof d.done === "number" ? d.done : 0,
-            total: typeof d.total === "number" ? d.total : 0,
-            current: typeof d.current === "string" ? d.current : "",
-            phase: typeof d.phase === "string" ? d.phase : "start",
-            partialCount: typeof d.partialCount === "number" ? d.partialCount : 0,
-            latestResults: Array.isArray(d.latestResults) ? d.latestResults : [],
-          },
-        };
-      },
-      view: (state) => state,
-    }));
-  }
+  const progressStore = createProgressStore();
+  ctx.effect(() => () => progressStore.dispose(), "dsh-tool-websearch: transient progress");
 
   const webServer = ctx.get("webServer");
   if (webServer && typeof webServer.register === "function") {
     const json = (res, status, data) => {
-      res.writeHead(status, { "Content-Type": "application/json" });
+      res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       res.end(JSON.stringify(data));
     };
-    const trustedHost = (req) => {
-      const raw = String((req.headers && req.headers.host) || "").toLowerCase();
-      const hostname = raw.startsWith("[") ? raw.slice(1, raw.indexOf("]")) : raw.split(":")[0];
-      return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+    // Use the same Host/Origin and browser-cookie fence as DSH's own HTTP routes.
+    const rejected = (req, res) => {
+      const connection = ctx.get("connection");
+      const status = typeof connection?.requestRejection === "function"
+        ? connection.requestRejection(req)
+        : 503;
+      if (status === undefined) return false;
+      res.writeHead(status, { "Cache-Control": "no-store" });
+      res.end();
+      return true;
     };
+    ctx.effect(() => webServer.register({
+      kind: "exact",
+      path: PROGRESS_API,
+      handler: async (req, res) => {
+        if (rejected(req, res)) return;
+        if (req.method !== "GET") {
+          res.writeHead(405, { Allow: "GET", "Cache-Control": "no-store" });
+          res.end();
+          return;
+        }
+        const url = new URL(req.url || "/", "http://localhost");
+        const sessionId = url.searchParams.get("sessionId");
+        const callId = url.searchParams.get("callId");
+        if (!sessionId || !callId || sessionId.length > 512 || callId.length > 512
+          || url.searchParams.getAll("sessionId").length !== 1
+          || url.searchParams.getAll("callId").length !== 1) {
+          json(res, 400, { error: "sessionId and callId are required" });
+          return;
+        }
+        // No session enumeration or callId-only fallback: collisions stay isolated.
+        const progress = progressStore.get(sessionId, callId);
+        json(res, 200, { progress: progress ?? null });
+      },
+    }), "dsh-tool-websearch: progress api route");
     ctx.effect(() => webServer.register({
       kind: "prefix",
       path: PROXY_API_BASE,
       handler: async (req, res) => {
         try {
-          if (!trustedHost(req)) {
-            res.writeHead(403);
-            res.end("forbidden");
-            return;
-          }
+          if (rejected(req, res)) return;
           const { getProxyState, setProxyEnabled, toggleProxy } = await import("./search.bundle.mjs");
           const url = new URL(req.url || "/", "http://localhost");
           const method = (req.method || "GET").toUpperCase();
@@ -169,6 +165,7 @@ function apply(ctx) {
     DESCRIPTION,
     PARAMETERS,
     async function execute(args, exec) {
+      let observation;
       try {
         if (!args || typeof args.query !== "string" || !args.query.trim()) {
           return "ERROR: query 参数必填";
@@ -176,15 +173,17 @@ function apply(ctx) {
         if (!existsSync(fileURLToPath(BUNDLE_URL))) {
           return "ERROR: 搜索 bundle 缺失(" + fileURLToPath(BUNDLE_URL) + ")。请在插件目录运行 `bun run build` 后重新安装。";
         }
-        // 进度通道:每引擎相位 append 到会话事件流,投影单元折叠后推送到 UI
-        const session = exec && exec.agent && exec.agent.session ? exec.agent.session : undefined;
-        const callId = exec && exec.callId ? String(exec.callId) : undefined;
-        const emitProgress = session && callId
+        const sessionId = exec?.agent?.session?.id;
+        const callId = exec?.callId;
+        observation = typeof sessionId === "string" && typeof callId === "string"
+          ? progressStore.start(sessionId, callId, exec?.signal)
+          : undefined;
+        const emitProgress = observation
           ? (p) => {
               try {
-                session.append(PROGRESS_EVENT, { callId, ...p }, { ignorable: true });
+                observation.update(p);
               } catch {
-                /* 进度观测绝不能破坏搜索本身 */
+                /* Progress observation must never fail the search. */
               }
             }
           : undefined;
@@ -201,6 +200,8 @@ function apply(ctx) {
       } catch (error) {
         if (exec && exec.signal && exec.signal.aborted) return "搜索已取消。";
         return "ERROR: " + (error && error.message ? error.message : String(error));
+      } finally {
+        observation?.finish();
       }
     },
     function presentCall(args) {

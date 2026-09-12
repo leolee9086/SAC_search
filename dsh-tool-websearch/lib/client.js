@@ -8,7 +8,7 @@ window.__ModuleLoader__.load({
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		let react = require("react");
 
-		const PROGRESS_KEY = "websearch-progress";
+		const PROGRESS_API = "/api/dsh-websearch/progress";
 		const PROXY_API_BASE = "/api/dsh-websearch/proxy";
 		const inject = ["slots"];
 
@@ -250,11 +250,51 @@ window.__ModuleLoader__.load({
 			return react.createElement("div", { style: rowStyle, ...events }, content);
 		}
 
+		function useSearchProgress(sessionId, callId, running) {
+			const [snapshot, setSnapshot] = react.useState(null);
+			react.useEffect(() => {
+				setSnapshot(null);
+				if (!running || !sessionId || !callId) return;
+				let stopped = false;
+				let timer;
+				let request;
+				const poll = async () => {
+					request = new AbortController();
+					const timeout = setTimeout(() => request.abort(), 10000);
+					let retry = true;
+					try {
+						const query = new URLSearchParams({ sessionId, callId });
+						const response = await fetch(PROGRESS_API + "?" + query, {
+							credentials: "same-origin", cache: "no-store",
+							headers: { accept: "application/json" }, signal: request.signal,
+						});
+						if (response.status === 401 || response.status === 403) retry = false;
+						if (response.ok) {
+							const value = await response.json();
+							if (!stopped) setSnapshot({ sessionId, callId, progress: value?.progress });
+						}
+					} catch {
+						// Transient transport failures leave the running card usable.
+					} finally {
+						clearTimeout(timeout);
+						if (!stopped && retry) timer = setTimeout(poll, 500);
+					}
+				};
+				void poll();
+				return () => {
+					stopped = true;
+					clearTimeout(timer);
+					request?.abort();
+				};
+			}, [sessionId, callId, running]);
+			return running && snapshot && snapshot.sessionId === sessionId && snapshot.callId === callId
+				? snapshot.progress : undefined;
+		}
+
 		function WebSearchMetaView(props) {
 			const info = blockText(props.block);
 			const query = queryOf(info.argsRaw);
-			const allProgress = typeof props.useProjection === "function" ? props.useProjection(PROGRESS_KEY) : undefined;
-			const progress = allProgress && props.callId ? allProgress[props.callId] : undefined;
+			const progress = useSearchProgress(props.sessionId, props.callId, !info.done);
 			if (!info.done) {
 				const summary = progress
 					? "引擎 " + (progress.done || 0) + "/" + (progress.total || 0) + " · 当前 " + (progress.current || "准备中") + " · 已得 " + (progress.partialCount || 0) + " 条"
