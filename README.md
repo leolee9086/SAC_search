@@ -2,7 +2,14 @@
 
 **SAC = Stand Alone Complex(攻壳机动队术语)：没有原型的独立复合体。** 命名梗一脉相承自 [SiyuanAssistantCollection](https://github.com/leolee9086/SiyuanAssistantCollection)(表面读作 "Siyuan Assistant Collection"，SAC 实为 Stand Alone Complex 的标准缩写)——本仓库延续同一梗：官方没有给第三方插件预留注册面（没有原型），社区插件自发聚合出同类能力（独立复合体）。本仓库不是任何官方项目的子集，而是一个独立成型的复合体——约 200 个免 API key 搜索引擎自发聚合，在 DeepSeek Harness 上作为自包含插件运行。
 
-插件本体在 [`dsh-tool-websearch/`](./dsh-tool-websearch)：免 API key 直接调用 DuckDuckGo / Bing / Google / 百度 / 搜狗 等约 200 个搜索引擎，并发执行、结果去重聚合、按引擎权重与时效性评分。搜索实现移植自 s-code，构建期打包为自包含 ESM bundle，运行时零依赖，只通过运行时的 Cordis 服务契约与 DSH 交互。
+本仓库目前有两个插件：
+
+| 插件 | 做什么 |
+|---|---|
+| [`dsh-tool-websearch/`](./dsh-tool-websearch) | **互联网元搜索**：免 API key 直接调用 DuckDuckGo / Bing / Google / 百度 / 搜狗 等约 200 个搜索引擎，并发执行、结果去重聚合、按引擎权重与时效性评分。搜索实现移植自 s-code，构建期打包为自包含 ESM bundle，运行时零依赖。 |
+| [`dsh-tool-everything/`](./dsh-tool-everything) | **本机文件索引检索**：查询 [Everything](https://www.voidtools.com/) 自带的 HTTP 接口，毫秒级按文件名、路径、扩展名、大小、修改时间检索整机文件。索引包含整机文件名，**每次调用都要过 DSH 审批**；零运行时依赖。 |
+
+两个插件都只通过运行时的 Cordis 服务契约与 DSH 交互，不 import 任何 DSH 包。
 
 ## 安装
 

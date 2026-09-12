@@ -1,0 +1,49 @@
+{
+  "name": "dsh-tool-everything",
+  "version": "0.1.0",
+  "description": "DSH 工具插件：通过 Everything 自带的 HTTP 接口毫秒级检索本机文件索引，每次调用都需要用户审批",
+  "author": "leolee9086",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leolee9086/SAC_search.git",
+    "directory": "dsh-tool-everything"
+  },
+  "homepage": "https://github.com/leolee9086/SAC_search#readme",
+  "bugs": {
+    "url": "https://github.com/leolee9086/SAC_search/issues"
+  },
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "cordis",
+    "everything",
+    "voidtools",
+    "file-search"
+  ],
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check lib/index.js && node --check lib/everything.js"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {}
+}
