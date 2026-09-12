@@ -99,3 +99,11 @@ DeepSeek Harness 的会话日志持久化有一个已知事件类型白名单 `K
 ## 许可证
 
 MIT
+
+## 赞赏
+
+如果这个项目帮到了你，可以请我喝杯咖啡：
+
+![赞赏码](assets/sponsor-qr.png)
+
+也欢迎通过 [爱发电](https://afdian.net/a/leolee9086) 支持。
