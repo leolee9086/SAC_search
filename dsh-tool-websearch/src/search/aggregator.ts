@@ -73,19 +73,67 @@ export function queryTerms(query: string): string[] {
 }
 
 /**
+ * 中文高频虚字（相关性计算时不计入）。
+ *
+ * 为什么要排除：像「怎么利用AI赚钱」这种查询里，"怎""么"是虚字 ——
+ * 任何含"怎么"的中文文本都会命中它们，字符覆盖率被凭空拉高，
+ * 无关页面也能拿到"相关"的评价。
+ *
+ * 只收**最没有歧义**的一批。像「中/上/下/多/少/能/会/为/以/到」这些
+ * 在很多查询里是实义字（中间件、上线、能效、会计…），
+ * 排除它们会误伤真相关内容，所以宁可少收几个。
+ */
+const CJK_STOP_CHARS = new Set([
+  ...'的了是在和与及或等这那你我他她它们就都而之吗呢吧啊么怎什么怎样如何',
+])
+
+/**
+ * 查询里的 CJK 字符（去重）。
+ *
+ * 取的是「查询里出现过哪些字」，不区分顺序 —— 这正是它比 bigram 宽容的地方。
+ */
+function cjkChars(query: string): string[] {
+  const chars = query.match(/[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) ?? []
+  const unique = [...new Set(chars)]
+  const meaningful = unique.filter((c) => !CJK_STOP_CHARS.has(c))
+  // 若整条查询都是虚字（比如就问「怎么办」），那就不过滤 ——
+  // 宁可相关性算得粗一点，也不能让所有结果因为"没有实义字"而一起归零
+  return meaningful.length > 0 ? meaningful : unique
+}
+
+/**
  * 文本与查询的相关性，0..1。
  *
- * 只做「词项命中比例」这一个朴素判断 —— 但对"把不相关的东西挡下去"
- * 这个目的已经够用，而且快、无依赖、可解释。
+ * 两个互补的判据，**取较大者**（而非加权平均 —— 两者擅长的情况不同，
+ * 平均会把各自的优势互相稀释）：
+ *
+ * ① **词项命中率**（英文按词、中文按 bigram）—— 精确，但对**长中文查询太严**：
+ *    「设计师兼程序员怎么赚钱」会被切成 9 个 bigram，
+ *    一条明显相关的结果（标题「程序员副业赚钱指南」）通常只命中一两个
+ *    → 0.11~0.22，而完全无关的结果是 0。
+ *    再经 `score *= 0.15 + 0.85 * rel`，两者只差 0.24 vs 0.15 ——
+ *    **区分度不足以把无关结果压下去**：实测 BrainyQuote 名言站、
+ *    法语自助出版站排进了前 4 名。
+ *
+ * ② **中文字符覆盖率** —— 粒度更粗，但判"相关/无关"更稳：
+ *    相关的标题会覆盖查询里的大部分实义字，无关的几乎一个都不沾。
+ *    乘 0.75 是因为它天然比 bigram 宽松（粒度小），不该完全压过 ①。
  */
 export function relevance(text: string, query: string): number {
   if (text === "" || query.trim() === "") return 0
-  const terms = queryTerms(query)
-  if (terms.length === 0) return 0
   const lower = text.toLowerCase()
-  let hit = 0
-  for (const t of terms) if (lower.includes(t)) hit++
-  return hit / terms.length
+
+  const terms = queryTerms(query)
+  const termScore = terms.length === 0
+    ? 0
+    : terms.filter((t) => lower.includes(t)).length / terms.length
+
+  const chars = cjkChars(query)
+  const charScore = chars.length === 0
+    ? 0
+    : chars.filter((c) => lower.includes(c)).length / chars.length
+
+  return Math.max(termScore, charScore * 0.75)
 }
 
 /**
@@ -144,8 +192,22 @@ export function calculateScore(
     const snippetRel = snippet === undefined ? 0 : relevance(snippet, query)
     // 标题比摘要更权威，所以取「标题相关性」与「打折后的摘要相关性」中的较大者
     const rel = Math.max(titleRel, snippetRel * 0.6)
-    // 下界 0.15：即使判为不相关也留一点分，避免我们的相关性算法误判时把好结果彻底埋掉
-    score *= 0.15 + 0.85 * rel
+    /*
+     * 下界 0.05：判为完全不相关的结果压到 5%。
+     *
+     * 为什么从 0.15 降到 0.05：区分度不够。
+     * 实测中文长查询下，相关结果的 rel 常在 0.2~0.35（bigram 被切得太碎，
+     * 字符覆盖率也难得高分），于是：
+     *     无关 ×0.15   vs   相关 ×0.32   → 只差 2 倍
+     * 而无关结果凭借"命中数"或"发布时间"完全可能翻过这 2 倍，
+     * 这正是 BrainyQuote、法语出版站排进前 4 名的机制。
+     * 降到 0.05 后：无关 ×0.05 vs 相关 ×0.37 → **差 7 倍**，噪声压得住了。
+     *
+     * 保留一个非零下界（而不是直接归零）的原因：我们的相关性算法是朴素的，
+     * 总会有判错的时候。留 5% 让它在"整批结果都不相关"时仍能按共识分出高低，
+     * 不至于全军覆没成一片零分。
+     */
+    score *= 0.05 + 0.95 * rel
   }
 
   // ── 时效性：**只做微调，不改变主序** ──

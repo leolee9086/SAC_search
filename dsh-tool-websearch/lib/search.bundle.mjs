@@ -27866,18 +27866,24 @@ function queryTerms(query) {
   }
   return terms;
 }
+var CJK_STOP_CHARS = new Set([
+  ..."的了是在和与及或等这那你我他她它们就都而之吗呢吧啊么怎什么怎样如何"
+]);
+function cjkChars(query) {
+  const chars = query.match(/[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) ?? [];
+  const unique = [...new Set(chars)];
+  const meaningful = unique.filter((c) => !CJK_STOP_CHARS.has(c));
+  return meaningful.length > 0 ? meaningful : unique;
+}
 function relevance(text2, query) {
   if (text2 === "" || query.trim() === "")
     return 0;
-  const terms = queryTerms(query);
-  if (terms.length === 0)
-    return 0;
   const lower = text2.toLowerCase();
-  let hit = 0;
-  for (const t of terms)
-    if (lower.includes(t))
-      hit++;
-  return hit / terms.length;
+  const terms = queryTerms(query);
+  const termScore = terms.length === 0 ? 0 : terms.filter((t) => lower.includes(t)).length / terms.length;
+  const chars = cjkChars(query);
+  const charScore = chars.length === 0 ? 0 : chars.filter((c) => lower.includes(c)).length / chars.length;
+  return Math.max(termScore, charScore * 0.75);
 }
 function calculateScore(engines, positions, weights, publishedDate, title, snippet, query) {
   let weight = 1;
@@ -27891,7 +27897,7 @@ function calculateScore(engines, positions, weights, publishedDate, title, snipp
     const titleRel = title === undefined ? 0 : relevance(title, query);
     const snippetRel = snippet === undefined ? 0 : relevance(snippet, query);
     const rel = Math.max(titleRel, snippetRel * 0.6);
-    score *= 0.15 + 0.85 * rel;
+    score *= 0.05 + 0.95 * rel;
   }
   if (publishedDate !== undefined) {
     const daysAgo = (Date.now() - publishedDate) / 86400000;
