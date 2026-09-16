@@ -245,7 +245,7 @@ export const GENERAL_ENGINE_NAMES: readonly string[] = [
   'github', 'github-code', 'github-issues', 'gitlab', 'mdn', 'npm', 'dockerhub',
   'packagist', 'rubygems', 'crates', 'huggingface',
   // ── 中文社区（中文查询的召回补充）──
-  'zhihu', 'douban', 'weibo', 'xiaohongshu', 'reddit',
+  'zhihu', 'douban', 'weibo', 'xiaohongshu', 'reddit', 'bilibili', 'sogou-videos',
   // ── 新闻 ──
   'bbc-news', 'theguardian', 'techcrunch', 'theverge', 'arstechnica', 'reuters',
 ]
@@ -424,7 +424,11 @@ export function selectEngines(
 
   // Bilibili 视频搜索 — 调用 Bilibili 内部 JSON API
   // 无需 API key，通过随机 buvid3 cookie 绕过基础反爬
-  if (flags?.bilibili || isType("video")) {
+  // B站：中文视频内容的主要来源。原来这条条件里漏了"通用查询也要加"
+  // （批量替换时正则只匹配 `if (isType(...))` 开头的行，这条前面有
+  // `flags?.bilibili ||` 前缀被漏掉了），结果它在 general 下从不参与 ——
+  // 而实测它能稳定返回 30 条中文结果。
+  if (flags?.bilibili || isGeneral || isType("video")) {
     engines.push(makeBilibili(makeEngineConfig({
       name: "bilibili",
       weight: 1.0,

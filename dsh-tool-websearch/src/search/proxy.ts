@@ -42,7 +42,7 @@ const PROBE_TIMEOUT_MS = 5_000
  *
  * 域名匹配用后缀形式（`baidu.com` 覆盖 `www.baidu.com`、`tieba.baidu.com`）。
  */
-const NO_PROXY = [
+export const NO_PROXY = [
   // 本机
   "localhost", "127.0.0.1", "::1", ".local",
   // 国内主流站点（直连更快也更可靠）

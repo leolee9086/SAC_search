@@ -43372,6 +43372,8 @@ var GENERAL_ENGINE_NAMES = [
   "weibo",
   "xiaohongshu",
   "reddit",
+  "bilibili",
+  "sogou-videos",
   "bbc-news",
   "theguardian",
   "techcrunch",
@@ -43496,7 +43498,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (flags?.bilibili || isType("video")) {
+  if (flags?.bilibili || isGeneral || isType("video")) {
     engines.push(makeBilibili(makeEngineConfig({
       name: "bilibili",
       weight: 1,
