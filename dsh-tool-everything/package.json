@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-everything",
-  "version": "0.1.0",
-  "description": "DSH 工具插件：通过 Everything 自带的 HTTP 接口毫秒级检索本机文件索引，每次调用都需要用户审批",
+  "version": "0.2.0",
+  "description": "DSH 工具插件：通过 Everything 自带的 HTTP 接口毫秒级检索文件索引。整机检索每次调用都需要用户审批，工作区内检索范围钉在会话工作区、免审批",
   "author": "leolee9086",
   "repository": {
     "type": "git",

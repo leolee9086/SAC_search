@@ -31,6 +31,9 @@ export const DEFAULTS = {
  *          read-only / workspace-write 需要审批。这是默认。
  *   always 每次调用都要审批。
  *   never  从不审批(不推荐:Everything 索引包含整机文件名)。
+ *
+ * 工作区检索(everything_workspace_search)不受 auto 的这条分支影响:它的范围
+ * 由插件钉在工作区内,默认直接放行,只有解析不到工作区根时才申请审批。
  */
 export const APPROVAL_MODES = ["auto", "always", "never"];
 
@@ -221,4 +224,86 @@ export async function probeEverything(options, runtime = {}) {
     reachable: true,
     total: Number.isFinite(Number(payload?.totalResults)) ? Number(payload.totalResults) : 0,
   };
+}
+
+/** 把 ext 便捷参数拼成 Everything 的 ext: 子句(多个用 `;` 分隔);没有就返回空串。 */
+export function composeExtClause(ext) {
+  const value = typeof ext === "string" ? ext.trim() : "";
+  if (!value) return "";
+  const list = value.split(/[;,]/).map((item) => item.trim().replace(/^\./, "")).filter(Boolean);
+  return list.length > 0 ? `ext:${list.join(";")}` : "";
+}
+
+/** 把 path/ext 便捷参数拼成 Everything 查询语法。 */
+export function composeQuery(args) {
+  const parts = [];
+  const query = typeof args?.query === "string" ? args.query.trim() : "";
+  if (query) parts.push(query);
+  const dir = typeof args?.path === "string" ? args.path.trim() : "";
+  if (dir) {
+    // path: 是"整条路径里含这段文本"的匹配,不补尾部分隔符会把同前缀的兄弟目录一起带进来
+    // (实测 path:"C:\Program Files" 317684 条,补成 path:"C:\Program Files\" 后 283886 条)。
+    const scoped = /[\\/]$/.test(dir) ? dir : `${dir}\\`;
+    parts.push(`path:"${scoped}"`);
+  }
+  const ext = composeExtClause(args?.ext);
+  if (ext) parts.push(ext);
+  return parts.join(" ");
+}
+
+/**
+ * 把调用方给的相对子目录收敛成安全的相对片段。
+ * 三种写法一律拒绝,因为它们都能把范围带出工作区:
+ *   - 绝对路径(盘符、UNC、前导分隔符)等于换一个根;
+ *   - 任何 `..` 段等于向上跳;
+ *   - 引号与换行能提前闭合 path:"…",再拼一条指向别处的 path:。
+ * 工作区检索免审批的前提就是范围确实留在工作区内,所以这一层必须收紧。
+ */
+export function confineSubpath(value) {
+  if (value === undefined || value === null) return { value: "" };
+  if (typeof value !== "string") return { error: "subpath 必须是字符串" };
+  const raw = value.trim();
+  if (!raw) return { value: "" };
+  const unified = raw.replace(/\//g, "\\");
+  if (/^[a-zA-Z]:/.test(unified) || unified.startsWith("\\\\")) {
+    return { error: "subpath 必须是工作区内的相对路径,不能是绝对路径或 UNC 路径" };
+  }
+  const segments = [];
+  for (const segment of unified.split("\\")) {
+    const item = segment.trim();
+    if (!item || item === ".") continue;
+    if (item === "..") return { error: "subpath 不能包含 .." };
+    if (/["\r\n]/.test(item)) return { error: "subpath 不能包含引号或换行" };
+    segments.push(item);
+  }
+  return { value: segments.join("\\") };
+}
+
+/** Everything 的 OR 运算符:工作区检索里出现它就等于放弃范围限定。 */
+const OR_OPERATOR = "|";
+
+/**
+ * 拼工作区检索的查询串。范围由插件自己钉上去(工作区根 + 相对子目录),
+ * 调用方给的 query 只当搜索条件,不参与限定范围。
+ * @param args - 工具入参(query/subpath/ext)。
+ * @param workspaceRoot - 本会话的工作区根;解析不到时直接报错,不做退让。
+ * @returns {{query: string}|{error: string}}
+ */
+export function composeWorkspaceQuery(args, workspaceRoot) {
+  const root = (typeof workspaceRoot === "string" ? workspaceRoot.trim() : "")
+    .replace(/\//g, "\\")
+    .replace(/\\+$/, "");
+  if (!root) return { error: "解析不到本会话的工作区根目录,无法把范围限定在工作区内" };
+  const query = typeof args?.query === "string" ? args.query.trim() : "";
+  if (query.includes(OR_OPERATOR)) {
+    return { error: `工作区检索不接受 ${OR_OPERATOR}(Everything 的 OR),它会把范围带出工作区` };
+  }
+  const subpath = confineSubpath(args?.subpath);
+  if (subpath.error) return { error: subpath.error };
+  const parts = [];
+  if (query) parts.push(query);
+  parts.push(`path:"${subpath.value ? `${root}\\${subpath.value}` : root}\\"`);
+  const ext = composeExtClause(args?.ext);
+  if (ext) parts.push(ext);
+  return { query: parts.join(" ") };
 }

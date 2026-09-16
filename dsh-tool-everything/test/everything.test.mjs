@@ -10,6 +10,9 @@ import {
 } from "../lib/index.js";
 import {
   fileTimeToUnixMs,
+  confineSubpath,
+  composeExtClause,
+  composeWorkspaceQuery,
   formatLocalTime,
   formatResults,
   formatSearchUrl,
@@ -21,16 +24,21 @@ import {
 } from "../lib/everything.js";
 import { apply, inject, name } from "../lib/index.js";
 
-/** 造一个只记事的假 ctx;sandboxMode 给了就假装挂了 sandboxPolicy 服务。 */
-function fakeCtx({ sandboxMode } = {}) {
+/** 造一个只记事的假 ctx;给了 sandboxMode 或 workspaceRoot 就假装挂了 sandboxPolicy 服务。 */
+function fakeCtx({ sandboxMode, workspaceRoot } = {}) {
   const tools = new Map();
   const listeners = new Map();
   const effects = [];
+  const hasPolicy = sandboxMode !== undefined || workspaceRoot !== undefined;
+  const root = workspaceRoot === undefined ? "D:\\dev" : workspaceRoot;
   return {
     tools: { register(def) { tools.set(def.name, def); } },
     get(serviceName) {
-      if (serviceName !== "sandboxPolicy" || sandboxMode === undefined) return undefined;
-      return { resolve: () => ({ mode: sandboxMode, workspaceRoot: "D:/dev" }) };
+      if (serviceName !== "sandboxPolicy" || !hasPolicy) return undefined;
+      const resolved = {};
+      if (sandboxMode !== undefined) resolved.mode = sandboxMode;
+      if (root) resolved.workspaceRoot = root;
+      return { resolve: () => resolved };
     },
     on(event, handler) {
       const list = listeners.get(event) ?? [];
@@ -247,18 +255,23 @@ test("probeEverything 只取可达性与命中数", async () => {
   assert.deepEqual(outcome, { reachable: true, total: 4 });
 });
 
-test("插件注册两个工具并导出常规字段", () => {
+test("插件注册三个工具并导出常规字段", () => {
   const ctx = fakeCtx();
   apply(ctx);
   assert.equal(name, "dsh-tool-everything");
   assert.deepEqual(inject, ["tools"]);
-  assert.deepEqual([...ctx._tools.keys()].sort(), ["everything_search", "everything_status"]);
+  assert.deepEqual([...ctx._tools.keys()].sort(), ["everything_search", "everything_status", "everything_workspace_search"]);
   for (const def of ctx._tools.values()) {
     assert.equal(typeof def.execute, "function");
     assert.equal(def.parameters.type, "object");
     assert.equal(def.output.schema.type, "string");
   }
   assert.deepEqual(ctx._tools.get("everything_search").parameters.required, ["query"]);
+  assert.deepEqual(ctx._tools.get("everything_workspace_search").parameters.required, ["query"]);
+  // 工作区检索不暴露 path:范围只能由插件拼,调用方换不掉工作区根。
+  const workspace = ctx._tools.get("everything_workspace_search").parameters.properties;
+  assert.equal("path" in workspace, false);
+  assert.equal(typeof workspace.subpath, "object");
 });
 
 test("完全权限下直接调用,不进审批", async () => {
@@ -410,6 +423,155 @@ test("everything_status 报告接口与限制", async () => {
     assert.match(text, /默认 20 条,最多 100 条/);
     const probed = await def.execute({ probe: "Everything.exe" }, {});
     assert.match(probed, /探针「Everything\.exe」命中 4 条/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("composeExtClause 归一化扩展名书写", () => {
+  assert.equal(composeExtClause(undefined), "");
+  assert.equal(composeExtClause("  "), "");
+  assert.equal(composeExtClause(".psd"), "ext:psd");
+  assert.equal(composeExtClause("psd;png"), "ext:psd;png");
+  assert.equal(composeExtClause("psd, png"), "ext:psd;png");
+  assert.equal(composeExtClause(";;"), "");
+});
+
+test("confineSubpath 只放行工作区内的相对片段", () => {
+  assert.deepEqual(confineSubpath(undefined), { value: "" });
+  assert.deepEqual(confineSubpath("  "), { value: "" });
+  assert.deepEqual(confineSubpath("src/lib"), { value: "src\\lib" });
+  assert.deepEqual(confineSubpath("src\\lib\\"), { value: "src\\lib" });
+  assert.deepEqual(confineSubpath(".\\src"), { value: "src" });
+  assert.match(confineSubpath("..\\src").error, /\.\./);
+  assert.match(confineSubpath("src\\..\\other").error, /\.\./);
+  assert.match(confineSubpath("D:\\other").error, /绝对路径/);
+  assert.match(confineSubpath("\\\\server\\share").error, /绝对路径/);
+  // 引号能提前闭合 path:"…",再拼一条指向别处的 path:,必须拒。
+  assert.match(confineSubpath('src" path:"C:\\').error, /引号/);
+  assert.match(confineSubpath(42).error, /字符串/);
+});
+
+test("composeWorkspaceQuery 把范围钉在工作区根上", () => {
+  assert.deepEqual(composeWorkspaceQuery({ query: "报价" }, "D:\\dev"), { query: '报价 path:"D:\\dev\\"' });
+  // 正斜杠与尾部分隔符都归一化,不重复补。
+  assert.deepEqual(composeWorkspaceQuery({ query: "报价" }, "D:/dev/"), { query: '报价 path:"D:\\dev\\"' });
+  assert.deepEqual(composeWorkspaceQuery({ query: "报价", subpath: "src/lib" }, "D:/dev"), {
+    query: '报价 path:"D:\\dev\\src\\lib\\"',
+  });
+  assert.deepEqual(composeWorkspaceQuery({ query: "报价", ext: ".psd" }, "D:/dev"), {
+    query: '报价 path:"D:\\dev\\" ext:psd',
+  });
+  // 不给 query 也能只列出范围内的条目。
+  assert.deepEqual(composeWorkspaceQuery({}, "D:/dev"), { query: 'path:"D:\\dev\\"' });
+  assert.match(composeWorkspaceQuery({ query: "a" }, undefined).error, /工作区根/);
+  assert.match(composeWorkspaceQuery({ query: "a" }, "  ").error, /工作区根/);
+  // | 是 Everything 的 OR,它会让范围限定失效。
+  assert.match(composeWorkspaceQuery({ query: "a|b" }, "D:/dev").error, /OR/);
+  assert.match(composeWorkspaceQuery({ query: "a", subpath: "..\\x" }, "D:/dev").error, /\.\./);
+});
+
+test("工作区内检索不需要审批,完全权限下也一样", async () => {
+  for (const mode of ["workspace-write", "read-only", "danger-full-access"]) {
+    const ctx = fakeCtx({ sandboxMode: mode });
+    apply(ctx);
+    assert.deepEqual(await ctx._preExecute("everything_workspace_search", { arguments: { query: "a" } }), { kind: "allow" }, mode);
+  }
+});
+
+test("解析不到工作区根时工作区检索仍要审批(fail closed)", async () => {
+  const noService = fakeCtx();
+  apply(noService);
+  const decision = await noService._preExecute("everything_workspace_search", { arguments: { query: "a" } });
+  assert.equal(decision.kind, "ask");
+  assert.match(decision.reason, /^everything_workspace_search /);
+  assert.match(decision.reason, /无法确认范围留在工作区内/);
+  // 服务在、但没给出工作区根,同样按需要审批处理。
+  const noRoot = fakeCtx({ sandboxMode: "workspace-write", workspaceRoot: "" });
+  apply(noRoot);
+  assert.equal((await noRoot._preExecute("everything_workspace_search")).kind, "ask");
+});
+
+test("整机检索不会因为任何参数被放行", async () => {
+  const ctx = fakeCtx({ sandboxMode: "workspace-write" });
+  apply(ctx);
+  for (const args of [{}, { workspaceOnly: true }, { workspace: true }, { path: "D:\\dev" }, { subpath: "src" }]) {
+    const decision = await ctx._preExecute("everything_search", { arguments: args });
+    assert.equal(decision.kind, "ask", JSON.stringify(args));
+  }
+});
+
+test("approvalMode=always 时工作区检索也要审批,理由走通用说明", async () => {
+  const ctx = fakeCtx({ sandboxMode: "danger-full-access" });
+  apply(ctx, { approvalMode: "always" });
+  const decision = await ctx._preExecute("everything_workspace_search", { arguments: { query: "a" } });
+  assert.equal(decision.kind, "ask");
+  assert.match(decision.reason, /整机文件名索引/);
+  assert.doesNotMatch(decision.reason, /无法确认范围/);
+});
+
+test("审批理由里带上 subpath", () => {
+  assert.equal(
+    describeCall("everything_workspace_search", { query: "报价", subpath: "src\\lib" }),
+    'query="报价" subpath="src\\\\lib"',
+  );
+});
+
+test("everything_workspace_search 把工作区根拼进查询", async () => {
+  const ctx = fakeCtx({ sandboxMode: "workspace-write" });
+  apply(ctx);
+  const fetchImpl = fakeFetch({
+    totalResults: 1,
+    results: [{ type: "file", name: "a.txt", path: "D:\\dev\\src", size: "1024" }],
+  });
+  const original = globalThis.fetch;
+  globalThis.fetch = fetchImpl;
+  try {
+    const def = ctx._tools.get("everything_workspace_search");
+    const text = await def.execute({ query: "a", ext: "txt" }, {});
+    assert.match(text, /共 1 条匹配/);
+    assert.match(text, /D:\/dev\/src\/a\.txt/);
+    assert.equal(new URL(fetchImpl.calls[0]).searchParams.get("search"), 'a path:"D:\\dev\\" ext:txt');
+    await def.execute({ query: "b", subpath: "src/lib" }, {});
+    assert.equal(new URL(fetchImpl.calls[1]).searchParams.get("search"), 'b path:"D:\\dev\\src\\lib\\"');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("everything_workspace_search 的范围逃逸与缺工作区根不抛异常", async () => {
+  const ctx = fakeCtx({ sandboxMode: "workspace-write" });
+  apply(ctx);
+  const def = ctx._tools.get("everything_workspace_search");
+  assert.equal(await def.execute({}, {}), "ERROR: query 参数必填");
+  assert.match(await def.execute({ query: "a", subpath: "..\\other" }, {}), /^ERROR: .*\.\./);
+  assert.match(await def.execute({ query: "a|b" }, {}), /^ERROR: .*OR/);
+  const noService = fakeCtx();
+  apply(noService);
+  assert.match(await noService._tools.get("everything_workspace_search").execute({ query: "a" }, {}), /^ERROR: .*工作区根/);
+});
+
+test("everything_status 报告工作区检索的范围与免审批", async () => {
+  const ctx = fakeCtx({ sandboxMode: "workspace-write" });
+  apply(ctx);
+  const original = globalThis.fetch;
+  globalThis.fetch = fakeFetch({ totalResults: 0, results: [] });
+  try {
+    const text = await ctx._tools.get("everything_status").execute({}, {});
+    assert.match(text, /工作区检索: 免审批,范围钉在 path:"D:\\dev\\"/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("everything_status 在解析不到工作区根时如实报告", async () => {
+  const ctx = fakeCtx();
+  apply(ctx);
+  const original = globalThis.fetch;
+  globalThis.fetch = fakeFetch({ totalResults: 0, results: [] });
+  try {
+    const text = await ctx._tools.get("everything_status").execute({}, {});
+    assert.match(text, /工作区检索: 解析不到本会话的工作区根,会按需审批/);
   } finally {
     globalThis.fetch = original;
   }

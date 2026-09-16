@@ -1,6 +1,6 @@
 # dsh-tool-everything
 
-DSH 工具插件：通过 [Everything](https://www.voidtools.com/)（voidtools，Windows 文件名搜索引擎）自带的 HTTP 接口检索本机文件索引，提供 `everything_search` 和 `everything_status` 两个 Host 工具。
+DSH 工具插件：通过 [Everything](https://www.voidtools.com/)（voidtools，Windows 文件名搜索引擎）自带的 HTTP 接口检索本机文件索引，提供 `everything_search`、`everything_workspace_search` 和 `everything_status` 三个 Host 工具。前者检整机（每次调用都要审批），后者只检当前会话的工作区（免审批）。
 
 Everything 的索引是读 NTFS 主文件表建的、并用 USN Journal 增量维护，所以查询是毫秒级、不需要扫描目录。本插件只做"把查询转成 Everything 的 HTTP 请求、把结果整理给模型"，解析和索引都在 Everything 那边。
 
@@ -13,6 +13,8 @@ Everything 的索引是读 NTFS 主文件表建的、并用 USN Journal 增量�
 | 读不到权限服务 | 按需要审批处理（fail closed） |
 
 审批结果由 DSH 自己处理：它会写 `approval/asked` / `approval/decided` 审计事件，并把结果映射成放行或拒绝（拒绝、取消、通道不可用都是拒绝）；插件自己不裁决、也不放行任何调用。`config.approvalMode` 可以改成 `always`（任何权限都问）或 `never`（从不问，不建议）。
+
+**工作区内检索（`everything_workspace_search`）不需要审批。** 它的范围由插件自己拼在 `ctx.sandboxPolicy.resolve({ session }).workspaceRoot` 上（与会话文件权限同源，插件不自己猜 cwd），只会返回工作区内的条目，所以默认直接放行——免审批的依据是工具身份加插件自己拼的范围，不是调用方给的参数。`everything_search` 不提供任何"只搜工作区"的参数，任何调用都仍然过审批。工作区检索只有一处会问：解析不到工作区根时（fail closed）；`approvalMode: always` 也仍然一律申请。
 
 审批理由把**这次调用的关键词放在最前面**，让人看得见要搜什么再决定：
 
@@ -53,7 +55,7 @@ curl "http://127.0.0.1:8080/?search=Everything.exe&json=1&count=1&path_column=1"
 本包在 [SAC_search](https://github.com/leolee9086/SAC_search) 仓库的 `dsh-tool-everything/` 子目录里。开发时直接把该目录放进 `$DSH_HOME/plugins/`，或在 profile 里 link：
 
 ```
-dsh-tool-everything/  # everything_search / everything_status
+dsh-tool-everything/  # everything_search / everything_workspace_search / everything_status
 ```
 
 在该 profile 的 `cordis.patch.yml` 里挂载（已有 `insert` 列表时只追加这一项）：
@@ -94,8 +96,12 @@ dsh-tool-everything/  # everything_search / everything_status
 everything_search(query="ext:psd 效果图")
 everything_search(query="报价", path="D:\\工作", ext="xlsx;docx", maxResults=20)
 everything_search(query="^方案.*\\.pdf$", regex=true, sort="date_modified", ascending=false)
+everything_workspace_search(query="规则", ext="js;md")
+everything_workspace_search(query="报价", subpath="docs\\报价")
 everything_status(probe="Everything.exe")
 ```
+
+`everything_workspace_search` 与 `everything_search` 的差别只有范围：它没有 `path` 参数（范围由插件钉在会话工作区根上），多一个 `subpath`（工作区内的相对子目录，绝对路径、UNC、`..` 与引号一律拒绝）；`query` 里出现 `|`（Everything 的 OR）也会被拒——`|` 会让范围限定失效，而免审批的前提正是范围留在工作区内。
 
 `query` 走 **Everything 自己的搜索语法**，插件不解析它。实测（Everything 1.4.1.1032 的 HTTP 接口）各函数的有效性：
 
@@ -121,6 +127,8 @@ everything_status(probe="Everything.exe")
 - 只支持 Windows + 已安装并运行 Everything；插件不自己建索引，Everything 没跑起来就只能报错。
 - Everything 1.5 的 HTTP 参数与 1.4 有差异（1.5 起支持更多列与 `path=` 过滤），本插件按 1.4 实测行为实现。
 - 返回条数受 `count` 限制，超出部分不返回（文本里会提示还剩多少条）。
+- 工作区检索只保证范围被钉在工作区内，不保证 `query` 里的其它条件都被理解：`name:` 在 HTTP 接口上无效这类事实对两个工具一样成立。
+- 工作区根取自会话（会话 cwd > 部署默认）；会话搬了目录要重新起会话，插件不缓存也不猜。
 
 ## 测试
 
@@ -129,7 +137,7 @@ pnpm test        # node --test test/*.test.mjs
 pnpm run check   # node --check lib/*.js
 ```
 
-测试全部用假 fetch 与假 ctx，不打真实网络、不要求本机装 Everything：覆盖 URL 拼装、FILETIME 换算、结果映射、错误与超时/取消分类、审批闸门（自家工具 ask、别的工具放行、可关闭）、两个工具的入参校验与文本输出。
+测试全部用假 fetch 与假 ctx，不打真实网络、不要求本机装 Everything：覆盖 URL 拼装、FILETIME 换算、结果映射、错误与超时/取消分类、审批闸门（整机检索 ask、工作区检索放行、别的工具放行、可关闭）、三个工具的入参校验与文本输出，以及工作区检索的范围拼装与逃逸拒绝（`..`、绝对路径、UNC、引号、`|`）。
 
 ## 许可证
 
