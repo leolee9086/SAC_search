@@ -28438,7 +28438,11 @@ function waitForRateLimit(engine) {
 }
 
 // src/search/executor.ts
-var MAX_CONCURRENCY = 10;
+var MAX_CONCURRENCY = (() => {
+  const raw2 = process.env.DSH_WEBSEARCH_CONCURRENCY;
+  const n = raw2 === undefined ? Number.NaN : Number.parseInt(raw2, 10);
+  return Number.isFinite(n) && n > 0 ? n : 25;
+})();
 
 class ExecutorState {
   engineStatuses = new Map;

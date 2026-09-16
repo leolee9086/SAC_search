@@ -6,8 +6,23 @@
  */
 import { Duration, Effect } from "effect"
 
-/** 全局搜索引擎最大并发数，防止过多并发 HTTP 请求导致网络栈过载 */
-export const MAX_CONCURRENCY = 10
+/**
+ * 全局搜索引擎最大并发数。
+ *
+ * 原来是 10：47 个引擎要跑 5 轮，而**每轮的耗时取决于该轮最慢的那个引擎**
+ * （单引擎超时 15 秒），所以只要有一轮被慢引擎卡住，整体就被拖慢。
+ *
+ * 现在提到 25（约两轮跑完）。用环境变量可覆盖，因为最优值取决于
+ * **本机网络与代理各自能承受多少并发连接**，写死一个数字在不同机器上不是最优：
+ * 设太大可能被限流、或在代理处排队；设太小则慢引擎的等待被放大。
+ *
+ * 想调就设 `DSH_WEBSEARCH_CONCURRENCY=40` 之类，然后对比 stats 里的耗时。
+ */
+export const MAX_CONCURRENCY = (() => {
+  const raw = process.env.DSH_WEBSEARCH_CONCURRENCY
+  const n = raw === undefined ? Number.NaN : Number.parseInt(raw, 10)
+  return Number.isFinite(n) && n > 0 ? n : 25
+})()
 import { HttpClient } from "effect/unstable/http"
 import type { EngineStatus, SearchEngine, SearchOptions, SearchResult } from "./engine"
 import { AccessDeniedError, CaptchaError, EngineError, RateLimitError, TimeoutError, makeEngineStatus } from "./engine"
