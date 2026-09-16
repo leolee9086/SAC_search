@@ -5,6 +5,7 @@
  */
 import type { AggregatedResult, SearchResult } from "./engine"
 import { makeAggregatedResult } from "./engine"
+import { segmentCjk } from "./zh-cn"
 
 export function normalizeUrl(url: string): string {
   try {
@@ -60,16 +61,62 @@ function isSimilarTitle(a: string, b: string): boolean {
  * 不需要词典，召回过得去、精度也够用（「向上滚动」→ 向上/上滚/滚动）。
  * 英文与数字按连续字母数字切分，长度 < 2 的丢掉（单字母噪声太大）。
  */
+/**
+ * 把查询切成词项。
+ *
+ * 中文优先用**结巴词典分词**（`segmentCjk`，见 `zh-cn.ts`）；
+ * 词典不可用时退回 bigram（相邻两字成词）。
+ *
+ * 为什么换掉 bigram：「设计师兼程序员怎么赚钱」按 bigram 会被切成 10 个碎片
+ * （设计/计师/师兼/兼程/程序/序员/员怎/怎么/么赚/赚钱），
+ * 一条明显相关的结果常常只命中一两个 → 相关性算出来只有 0.11~0.2，
+ * 和完全无关的 0 拉不开差距。用真分词切出来是
+ * 「设计师 / 程序员 / 赚钱」，命中就是实打实的命中。
+ *
+ * bigram 仍保留作降级路径：它不依赖任何数据文件，永远不会失效。
+ */
 export function queryTerms(query: string): string[] {
+  // 按查询缓存：relevance() 对每条结果都会调到这里，
+  // 不缓存的话一次搜索会对同一个查询重复分词几十上百遍
+  if (query === cachedQuery) return cachedTerms
+  cachedTerms = computeTerms(query)
+  cachedQuery = query
+  return cachedTerms
+}
+
+let cachedQuery: string | undefined
+let cachedTerms: string[] = []
+
+function computeTerms(query: string): string[] {
   const terms: string[] = []
   const lower = query.toLowerCase()
+  // 英文与数字：按连续字母数字切分，长度 < 2 的丢掉（单字母噪声太大）
   for (const m of lower.matchAll(/[a-z0-9]{2,}/g)) terms.push(m[0])
+
   const cjkRuns = query.match(/[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+/g) ?? []
+
+  let segmented = false
   for (const run of cjkRuns) {
-    if (run.length === 1) { terms.push(run); continue }
-    for (let i = 0; i < run.length - 1; i++) terms.push(run.slice(i, i + 2))
+    const words = segmentCjk(run)
+    if (words !== null) {
+      segmented = true
+      for (const w of words) terms.push(w)
+    }
   }
-  return terms
+
+  // 词典不可用、或整条查询都是停用词（比如就问「怎么办」）→ 退回 bigram，
+  // 否则词项为空会让所有结果的相关性一起归零
+  if (!segmented || terms.length === 0) {
+    for (const run of cjkRuns) {
+      if (run.length === 1) {
+        terms.push(run)
+        continue
+      }
+      for (let i = 0; i < run.length - 1; i++) terms.push(run.slice(i, i + 2))
+    }
+  }
+
+  return [...new Set(terms)]
 }
 
 /**
@@ -193,21 +240,25 @@ export function calculateScore(
     // 标题比摘要更权威，所以取「标题相关性」与「打折后的摘要相关性」中的较大者
     const rel = Math.max(titleRel, snippetRel * 0.6)
     /*
-     * 下界 0.05：判为完全不相关的结果压到 5%。
+     * 下界 0.02：判为完全不相关的结果压到 2%。
      *
-     * 为什么从 0.15 降到 0.05：区分度不够。
-     * 实测中文长查询下，相关结果的 rel 常在 0.2~0.35（bigram 被切得太碎，
-     * 字符覆盖率也难得高分），于是：
-     *     无关 ×0.15   vs   相关 ×0.32   → 只差 2 倍
-     * 而无关结果凭借"命中数"或"发布时间"完全可能翻过这 2 倍，
-     * 这正是 BrainyQuote、法语出版站排进前 4 名的机制。
-     * 降到 0.05 后：无关 ×0.05 vs 相关 ×0.37 → **差 7 倍**，噪声压得住了。
+     * 这个数字是从 0.15 → 0.05 → 0.02 一路降下来的，每次都有实测依据：
      *
-     * 保留一个非零下界（而不是直接归零）的原因：我们的相关性算法是朴素的，
-     * 总会有判错的时候。留 5% 让它在"整批结果都不相关"时仍能按共识分出高低，
-     * 不至于全军覆没成一片零分。
+     * - **0.15** 时：无关 ×0.15 vs 中文长查询的相关 ×0.24 —— 只差 1.6 倍，
+     *   噪声凭"命中数"或"发布时间"就能翻过去（BrainyQuote、法语出版站排进前 4）。
+     * - **0.05** 时：换用结巴分词后相关性能到 0.33~0.67，看起来够了，
+     *   但实测仍有一条 Solana 币价混进第 4 名 —— 因为它的**基础分**很高
+     *   （在 bing 里排第 1：weight 0.9 × 1/1），×0.05 后仍有 0.045，
+     *   而一条"相关但排位靠后"的结果基础分只有 0.1 左右，
+     *   ×0.36 后是 0.036，反而更低。**基础分的差距压过了相关性。**
+     * - **0.02** 时：无关最高 0.9 × 0.02 = 0.018，相关最低 0.1 × 0.343 = 0.034，
+     *   相关性这一维终于能稳定地压住排位差异。
+     *
+     * 为什么保留一个非零下界而不是直接归零：我们的相关性算法是朴素的，
+     * 总有判错的时候。留 2% 让它至少还能按共识分排序，
+     * 而不是在"整批结果都不相关"时全军覆没成一片零分。
      */
-    score *= 0.05 + 0.95 * rel
+    score *= 0.02 + 0.98 * rel
   }
 
   // ── 时效性：**只做微调，不改变主序** ──

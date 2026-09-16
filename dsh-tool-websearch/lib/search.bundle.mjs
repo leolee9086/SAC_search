@@ -3249,9 +3249,9 @@ var require_webidl = __commonJS((exports, module) => {
   webidl.dictionaryConverter = function(converters) {
     return (dictionary, prefix, argument) => {
       const type = webidl.util.Type(dictionary);
-      const dict = {};
+      const dict2 = {};
       if (type === "Null" || type === "Undefined") {
-        return dict;
+        return dict2;
       } else if (type !== "Object") {
         throw webidl.errors.exception({
           header: prefix,
@@ -3281,10 +3281,10 @@ var require_webidl = __commonJS((exports, module) => {
               message: `${value2} is not an accepted type. Expected one of ${options3.allowedValues.join(", ")}.`
             });
           }
-          dict[key] = value2;
+          dict2[key] = value2;
         }
       }
-      return dict;
+      return dict2;
     };
   };
   webidl.nullableConverter = function(converter) {
@@ -27805,6 +27805,98 @@ function makeEngineStatus() {
   };
 }
 
+// src/search/zh-cn.ts
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+var MAX_WORD_LEN = 8;
+function resolveDataFile(name) {
+  const candidates = [
+    new URL(`../data/${name}`, import.meta.url),
+    new URL(`../../data/${name}`, import.meta.url)
+  ];
+  for (const url of candidates) {
+    try {
+      const p = fileURLToPath(url);
+      if (existsSync(p))
+        return p;
+    } catch {}
+  }
+  return null;
+}
+var dict;
+var stopwords;
+function getStopwords() {
+  if (stopwords !== undefined)
+    return stopwords;
+  const path = resolveDataFile("zh-stopwords.txt");
+  if (path === null) {
+    stopwords = new Set;
+    return stopwords;
+  }
+  try {
+    const raw2 = readFileSync(path, "utf8");
+    stopwords = new Set(raw2.split(`
+`).map((w) => w.trim()).filter((w) => w !== "" && /[\u4e00-\u9fff]/.test(w)));
+  } catch {
+    stopwords = new Set;
+  }
+  return stopwords;
+}
+function getDict() {
+  if (dict !== undefined)
+    return dict;
+  const path = resolveDataFile("zh-dict.txt");
+  if (path === null) {
+    dict = null;
+    return dict;
+  }
+  try {
+    const raw2 = readFileSync(path, "utf8");
+    const set5 = new Set;
+    for (const line of raw2.split(`
+`)) {
+      const sp = line.indexOf(" ");
+      const w = sp === -1 ? line : line.slice(0, sp);
+      if (w !== "")
+        set5.add(w);
+    }
+    dict = set5.size > 0 ? set5 : null;
+  } catch {
+    dict = null;
+  }
+  return dict;
+}
+function segment(text2, dictionary) {
+  const out = [];
+  let end = text2.length;
+  while (end > 0) {
+    let matched = "";
+    const maxLen = Math.min(MAX_WORD_LEN, end);
+    for (let len = maxLen;len >= 2; len--) {
+      const candidate = text2.slice(end - len, end);
+      if (dictionary.has(candidate)) {
+        matched = candidate;
+        break;
+      }
+    }
+    if (matched !== "") {
+      out.unshift(matched);
+      end -= matched.length;
+    } else {
+      out.unshift(text2[end - 1]);
+      end -= 1;
+    }
+  }
+  return out;
+}
+function segmentCjk(text2) {
+  const dictionary = getDict();
+  if (dictionary === null)
+    return null;
+  const sw = getStopwords();
+  return segment(text2, dictionary).filter((w) => w.length >= 2 && !sw.has(w));
+}
+
 // src/search/aggregator.ts
 function normalizeUrl(url) {
   try {
@@ -27851,20 +27943,40 @@ function isSimilarTitle(a, b) {
   return levenshtein(a, b) / maxLen < 0.2;
 }
 function queryTerms(query) {
+  if (query === cachedQuery)
+    return cachedTerms;
+  cachedTerms = computeTerms(query);
+  cachedQuery = query;
+  return cachedTerms;
+}
+var cachedQuery;
+var cachedTerms = [];
+function computeTerms(query) {
   const terms = [];
   const lower = query.toLowerCase();
   for (const m of lower.matchAll(/[a-z0-9]{2,}/g))
     terms.push(m[0]);
   const cjkRuns = query.match(/[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+/g) ?? [];
+  let segmented = false;
   for (const run2 of cjkRuns) {
-    if (run2.length === 1) {
-      terms.push(run2);
-      continue;
+    const words = segmentCjk(run2);
+    if (words !== null) {
+      segmented = true;
+      for (const w of words)
+        terms.push(w);
     }
-    for (let i = 0;i < run2.length - 1; i++)
-      terms.push(run2.slice(i, i + 2));
   }
-  return terms;
+  if (!segmented || terms.length === 0) {
+    for (const run2 of cjkRuns) {
+      if (run2.length === 1) {
+        terms.push(run2);
+        continue;
+      }
+      for (let i = 0;i < run2.length - 1; i++)
+        terms.push(run2.slice(i, i + 2));
+    }
+  }
+  return [...new Set(terms)];
 }
 var CJK_STOP_CHARS = new Set([
   ..."的了是在和与及或等这那你我他她它们就都而之吗呢吧啊么怎什么怎样如何"
@@ -27897,7 +28009,7 @@ function calculateScore(engines, positions, weights, publishedDate, title, snipp
     const titleRel = title === undefined ? 0 : relevance(title, query);
     const snippetRel = snippet === undefined ? 0 : relevance(snippet, query);
     const rel = Math.max(titleRel, snippetRel * 0.6);
-    score *= 0.05 + 0.95 * rel;
+    score *= 0.02 + 0.98 * rel;
   }
   if (publishedDate !== undefined) {
     const daysAgo = (Date.now() - publishedDate) / 86400000;
@@ -45313,9 +45425,9 @@ function extractKeywords(query, maxTokens = 5) {
   return keywords.slice(0, maxTokens);
 }
 // src/search/proxy.ts
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, writeFileSync } from "node:fs";
 import { join as join2 } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // node_modules/undici/index.js
 var Client = require_client();
@@ -45497,16 +45609,16 @@ var NO_PROXY = [
   "nowcoder.com",
   "cnbeta.com"
 ];
-var PLUGIN_DIR = fileURLToPath(new URL("../", import.meta.url));
+var PLUGIN_DIR = fileURLToPath2(new URL("../", import.meta.url));
 var STATE_FILE = join2(PLUGIN_DIR, "proxy-state.json");
 var state = { enabled: false, proxyUrl: "", source: "none", detectedUrl: "" };
 var dispatcherApplied = false;
 var resolving;
 function loadPersisted() {
   try {
-    if (!existsSync(STATE_FILE))
+    if (!existsSync2(STATE_FILE))
       return;
-    const raw2 = JSON.parse(readFileSync(STATE_FILE, "utf8"));
+    const raw2 = JSON.parse(readFileSync2(STATE_FILE, "utf8"));
     if (raw2 === null || typeof raw2 !== "object")
       return;
     const value2 = raw2;
