@@ -30715,9 +30715,68 @@ function parseSogouWeChatResults(html, maxResults) {
   return results;
 }
 
+// src/search/engines/searxng.ts
+var DEFAULT_ENDPOINT = "http://127.0.0.1:8899";
+var USER_AGENT6 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+function makeSearxng(config) {
+  return {
+    name: config.name,
+    config,
+    search: (http, query, opts) => searchSearxng(http, query, opts, config.timeout)
+  };
+}
+function searchSearxng(http, query, opts, timeout3) {
+  return exports_Effect.gen(function* () {
+    const endpoint = (process.env.DSH_SEARXNG_ENDPOINT ?? DEFAULT_ENDPOINT).replace(/\/+$/, "");
+    const url = `${endpoint}/search?q=${encodeURIComponent(query)}&format=json`;
+    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT6,
+      Accept: "application/json"
+    }))).pipe(exports_Effect.timeout(timeout3));
+    if (response.status < 200 || response.status >= 400)
+      return [];
+    const body = yield* response.text;
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      return [];
+    }
+    const numResults = opts.numResults && opts.numResults > 0 ? opts.numResults : 30;
+    return parseSearxngResults(parsed.results ?? [], numResults);
+  });
+}
+function parseSearxngResults(raw2, maxResults) {
+  const out = [];
+  let rank = 0;
+  for (const r of raw2) {
+    if (rank >= maxResults)
+      break;
+    const url = (r.url ?? "").trim();
+    const title = (r.title ?? "").trim();
+    if (url === "" || title === "")
+      continue;
+    rank++;
+    const upstreams = Array.isArray(r.engines) && r.engines.length > 0 ? r.engines : ["searxng"];
+    const published = r.publishedDate ? Date.parse(r.publishedDate) : Number.NaN;
+    for (const upstream of upstreams) {
+      out.push(makeSearchResult({
+        title,
+        url,
+        snippet: (r.content ?? "").trim(),
+        engine: `searxng:${upstream}`,
+        position: rank,
+        ...r.category !== undefined && r.category !== "" ? { category: r.category } : {},
+        ...Number.isFinite(published) ? { publishedDate: published } : {}
+      }));
+    }
+  }
+  return out;
+}
+
 // src/search/engines/baidu.ts
 var SEARCH_URL2 = "https://www.baidu.com/s";
-var USER_AGENT6 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT7 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeBaidu(config) {
   return {
     name: config.name,
@@ -30734,7 +30793,7 @@ function searchBaidu(http, query, numResults, timeout3) {
       tn: "json"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL2}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT6,
+      "User-Agent": USER_AGENT7,
       Accept: "application/json, text/javascript, */*; q=0.01",
       "Accept-Language": "zh-CN,zh;q=0.9",
       Referer: "https://www.baidu.com/"
@@ -30791,7 +30850,7 @@ function unescapeHtml(text2) {
 
 // src/search/engines/wikipedia.ts
 var API_URL2 = "https://en.wikipedia.org/w/api.php";
-var USER_AGENT7 = "opencode-search/1.0 (metasearch engine)";
+var USER_AGENT8 = "opencode-search/1.0 (metasearch engine)";
 function makeWikipedia(config) {
   return {
     name: config.name,
@@ -30810,7 +30869,7 @@ function searchWikipedia(http, query, numResults, timeout3) {
       origin: "*"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL2}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT7,
+      "User-Agent": USER_AGENT8,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -30858,7 +30917,7 @@ function parseWikipediaResults(raw2, maxResults) {
 
 // src/search/engines/arxiv.ts
 var API_URL3 = "http://export.arxiv.org/api/query";
-var USER_AGENT8 = "opencode-search/1.0 (metasearch engine)";
+var USER_AGENT9 = "opencode-search/1.0 (metasearch engine)";
 function makeArxiv(config) {
   return {
     name: config.name,
@@ -30875,7 +30934,7 @@ function searchArxiv(http, query, numResults, timeout3) {
       sortOrder: "descending"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL3}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT8,
+      "User-Agent": USER_AGENT9,
       Accept: "application/xml, text/xml"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -30923,7 +30982,7 @@ function extractXmlValue(xml, tag2) {
 
 // src/search/engines/semantic-scholar.ts
 var API_URL4 = "https://api.semanticscholar.org/graph/v1/paper/search";
-var USER_AGENT9 = "opencode-search/1.0 (metasearch engine)";
+var USER_AGENT10 = "opencode-search/1.0 (metasearch engine)";
 function makeSemanticScholar(config) {
   return {
     name: config.name,
@@ -30939,7 +30998,7 @@ function searchSemanticScholar(http, query, numResults, timeout3) {
       fields: "title,url,publicationDate,authors,abstract,externalIds"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL4}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT9,
+      "User-Agent": USER_AGENT10,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -30992,7 +31051,7 @@ function parseSemanticScholarResults(raw2, maxResults) {
 
 // src/search/engines/github.ts
 var API_URL5 = "https://api.github.com/search/repositories";
-var USER_AGENT10 = "opencode-search/1.0";
+var USER_AGENT11 = "opencode-search/1.0";
 function makeGitHub(config) {
   return {
     name: config.name,
@@ -31009,7 +31068,7 @@ function searchGitHub(http, query, numResults, timeout3) {
       order: "desc"
     });
     const headers = {
-      "User-Agent": USER_AGENT10,
+      "User-Agent": USER_AGENT11,
       Accept: "application/vnd.github.v3+json"
     };
     const token = process.env.GITHUB_TOKEN;
@@ -31063,7 +31122,7 @@ function parseGitHubResults(raw2, maxResults) {
 
 // src/search/engines/github-code.ts
 var API_BASE = "https://api.github.com";
-var USER_AGENT11 = "opencode-search/1.0";
+var USER_AGENT12 = "opencode-search/1.0";
 function makeGitHubCode(config) {
   return {
     name: config.name,
@@ -31080,7 +31139,7 @@ function searchGitHubCode(http, query, numResults, timeout3) {
       order: "desc"
     });
     const headers = {
-      "User-Agent": USER_AGENT11,
+      "User-Agent": USER_AGENT12,
       Accept: "application/vnd.github.v3.text-match+json"
     };
     const token = process.env.GITHUB_TOKEN;
@@ -31138,7 +31197,7 @@ function parseGitHubCodeResults(raw2, maxResults) {
 
 // src/search/engines/mdn.ts
 var SEARCH_URL3 = "https://developer.mozilla.org/en-US/search";
-var USER_AGENT12 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT13 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeMDN(config) {
   return {
     name: config.name,
@@ -31152,7 +31211,7 @@ function searchMDN(http, query, numResults, timeout3) {
       q: query
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL3}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT12,
+      "User-Agent": USER_AGENT13,
       Accept: "text/html,application/xhtml+xml",
       "Accept-Language": "en-US,en;q=0.9"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -31194,7 +31253,7 @@ function parseMDNResults(html, maxResults) {
 
 // src/search/engines/docsrs.ts
 var SEARCH_URL4 = "https://docs.rs/releases/search";
-var USER_AGENT13 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT14 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeDocsRs(config) {
   return {
     name: config.name,
@@ -31206,7 +31265,7 @@ function searchDocsRs(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL4}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT13,
+      "User-Agent": USER_AGENT14,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -31246,7 +31305,7 @@ function parseDocsRsResults(html, maxResults) {
 
 // src/search/engines/react-docs.ts
 var SEARCH_URL5 = "https://react.dev/search";
-var USER_AGENT14 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT15 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeReactDocs(config) {
   return {
     name: config.name,
@@ -31258,7 +31317,7 @@ function searchReactDocs(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL5}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT14,
+      "User-Agent": USER_AGENT15,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -31311,7 +31370,7 @@ function parseReactDocsResults(html, maxResults) {
 
 // src/search/engines/vue-docs.ts
 var SEARCH_URL6 = "https://vuejs.org/search";
-var USER_AGENT15 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT16 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeVueDocs(config) {
   return {
     name: config.name,
@@ -31323,7 +31382,7 @@ function searchVueDocs(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL6}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT15,
+      "User-Agent": USER_AGENT16,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -31355,7 +31414,7 @@ function parseVueDocsResults(html, maxResults) {
 
 // src/search/engines/python-docs.ts
 var SEARCH_URL7 = "https://docs.python.org/3/search.html";
-var USER_AGENT16 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT17 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makePythonDocs(config) {
   return {
     name: config.name,
@@ -31367,7 +31426,7 @@ function searchPythonDocs(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL7}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT16,
+      "User-Agent": USER_AGENT17,
       Accept: "text/html",
       "Accept-Language": "en-US,en;q=0.9"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -31403,7 +31462,7 @@ function parsePythonDocsResults(html, maxResults) {
 
 // src/search/engines/github-issues.ts
 var API_BASE2 = "https://api.github.com";
-var USER_AGENT17 = "opencode-search/1.0";
+var USER_AGENT18 = "opencode-search/1.0";
 function makeGitHubIssues(config) {
   return {
     name: config.name,
@@ -31420,7 +31479,7 @@ function searchGitHubIssues(http, query, numResults, timeout3) {
       order: "desc"
     });
     const headers = {
-      "User-Agent": USER_AGENT17,
+      "User-Agent": USER_AGENT18,
       Accept: "application/vnd.github.v3+json"
     };
     const token = process.env.GITHUB_TOKEN;
@@ -31485,7 +31544,7 @@ ${bodyPreview}` : ""),
 
 // src/search/engines/github-repo-files.ts
 var API_BASE3 = "https://api.github.com";
-var USER_AGENT18 = "opencode-search/1.0";
+var USER_AGENT19 = "opencode-search/1.0";
 function makeGitHubRepoFiles(config) {
   return {
     name: config.name,
@@ -31526,7 +31585,7 @@ function searchGitHubRepoFiles(http, query, numResults, timeout3) {
     if (!parsed)
       return [];
     const headers = {
-      "User-Agent": USER_AGENT18,
+      "User-Agent": USER_AGENT19,
       Accept: "application/vnd.github.v3+json"
     };
     const token = process.env.GITHUB_TOKEN;
@@ -32162,7 +32221,7 @@ var MIRRORS = [
   { name: "z-lib-gd", url: "https://zh.z-lib.gd" },
   { name: "zh-z-library-sk", url: "https://zh.z-library.sk" }
 ];
-var USER_AGENT19 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var USER_AGENT20 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeZLibrary(config) {
   return {
     name: config.name,
@@ -32185,7 +32244,7 @@ function searchZLibrary(http, query, numResults, timeout3) {
 function tryMirror(http, mirror, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `${mirror.url}/search?q=${encodeURIComponent(query)}&limit=${numResults}`;
-    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT19, Accept: "application/json, text/html" }))).pipe(exports_Effect.timeout(timeout3 * 0.8));
+    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT20, Accept: "application/json, text/html" }))).pipe(exports_Effect.timeout(timeout3 * 0.8));
     if (response.status < 200 || response.status >= 400)
       return [];
     const raw2 = yield* response.text.pipe(exports_Effect.catchIf(() => true, () => exports_Effect.succeed("")));
@@ -32244,7 +32303,7 @@ function parseZLibHtml(html, max4) {
 
 // src/search/engines/bing-images.ts
 var BING_IMAGES_URL = "https://www.bing.com/images/async";
-var USER_AGENT20 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT21 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeBingImages(config) {
   return {
     name: config.name,
@@ -32261,7 +32320,7 @@ function searchBingImages(http, query, numResults, timeout3) {
       count: String(Math.min(numResults, 35))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BING_IMAGES_URL}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT20,
+      "User-Agent": USER_AGENT21,
       "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
       Accept: "text/html,application/xhtml+xml"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -32315,7 +32374,7 @@ function parseBingImagesResults(html, maxResults) {
 
 // src/search/engines/sogou.ts
 var SEARCH_URL8 = "https://www.sogou.com/web";
-var USER_AGENT21 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT22 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeSogou(config) {
   return {
     name: config.name,
@@ -32327,7 +32386,7 @@ function searchSogou(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ query, page: "1" });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL8}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT21,
+      "User-Agent": USER_AGENT22,
       "Accept-Language": "zh-CN,zh;q=0.9",
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -32394,13 +32453,13 @@ function parseSogouResults(html, maxResults) {
 
 // src/search/engines/360search.ts
 var SEARCH_URL9 = "https://www.so.com/s";
-var USER_AGENT22 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT23 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function make360Search(config) {
   return { name: config.name, config, search: (http, q, opts) => search360(http, q, opts.numResults || config.maxResults, config.timeout) };
 }
 function search360(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL9}?q=${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT22, "Accept-Language": "zh-CN,zh", Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL9}?q=${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT23, "Accept-Language": "zh-CN,zh", Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
     const html = yield* response.text;
@@ -32639,7 +32698,7 @@ function parseGoogleResults(html, maxResults) {
 
 // src/search/engines/yandex.ts
 var SEARCH_URL10 = "https://yandex.com/search/site";
-var USER_AGENT23 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT24 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeYandex(config) {
   return {
     name: config.name,
@@ -32657,7 +32716,7 @@ function searchYandex(http, query, numResults, timeout3) {
       searchid: "3131712"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL10}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT23,
+      "User-Agent": USER_AGENT24,
       "Accept-Language": "en-US,en;q=0.9",
       Accept: "text/html,application/xhtml+xml"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -32711,7 +32770,7 @@ function parseYandexResults(html, maxResults) {
 
 // src/search/engines/naver.ts
 var SEARCH_URL11 = "https://search.naver.com/search.naver";
-var USER_AGENT24 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT25 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeNaver(config) {
   return {
     name: config.name,
@@ -32727,7 +32786,7 @@ function searchNaver(http, query, numResults, timeout3) {
       start: "1"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL11}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT24,
+      "User-Agent": USER_AGENT25,
       "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -32849,7 +32908,7 @@ function parseGoogleImagesResults(raw2, maxResults) {
 
 // src/search/engines/bing-videos.ts
 var SEARCH_URL12 = "https://www.bing.com/videos/asyncv2";
-var USER_AGENT25 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT26 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeBingVideos(config) {
   return {
     name: config.name,
@@ -32866,7 +32925,7 @@ function searchBingVideos(http, query, numResults, timeout3) {
       count: String(Math.min(numResults, 35))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL12}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT25,
+      "User-Agent": USER_AGENT26,
       "Accept-Language": "en-US,en;q=0.9",
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -32913,7 +32972,7 @@ function parseBingVideosResults(html, maxResults) {
 
 // src/search/engines/dailymotion.ts
 var API_URL6 = "https://api.dailymotion.com/videos";
-var USER_AGENT26 = "opencode-search/1.0";
+var USER_AGENT27 = "opencode-search/1.0";
 function makeDailymotion(config) {
   return {
     name: config.name,
@@ -32933,7 +32992,7 @@ function searchDailymotion(http, query, numResults, timeout3) {
       private: "false"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL6}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT26,
+      "User-Agent": USER_AGENT27,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -32980,7 +33039,7 @@ function parseDailymotionResults(raw2, maxResults) {
 
 // src/search/engines/soundcloud.ts
 var SEARCH_URL13 = "https://soundcloud.com/search";
-var USER_AGENT27 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT28 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeSoundCloud(config) {
   return {
     name: config.name,
@@ -32991,7 +33050,7 @@ function makeSoundCloud(config) {
 function searchSoundCloud(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL13}?q=${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT27,
+      "User-Agent": USER_AGENT28,
       Accept: "text/html",
       "Accept-Language": "en-US,en;q=0.9"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -33030,7 +33089,7 @@ function parseSoundCloudResults(html, maxResults) {
 
 // src/search/engines/flickr.ts
 var SEARCH_URL14 = "https://www.flickr.com/search";
-var USER_AGENT28 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT29 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeFlickr(config) {
   return {
     name: config.name,
@@ -33041,7 +33100,7 @@ function makeFlickr(config) {
 function searchFlickr(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL14}?text=${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT28,
+      "User-Agent": USER_AGENT29,
       Accept: "text/html",
       "Accept-Language": "en-US,en;q=0.9"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -33080,7 +33139,7 @@ function parseFlickrResults(html, maxResults) {
 
 // src/search/engines/douban.ts
 var SEARCH_URL15 = "https://www.douban.com/search";
-var USER_AGENT29 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT30 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeDouban(config) {
   return {
     name: config.name,
@@ -33091,7 +33150,7 @@ function makeDouban(config) {
 function searchDouban(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL15}?q=${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT29,
+      "User-Agent": USER_AGENT30,
       "Accept-Language": "zh-CN,zh;q=0.9",
       Accept: "text/html",
       Referer: "https://www.douban.com/"
@@ -33132,7 +33191,7 @@ function parseDoubanResults(html, maxResults) {
 
 // src/search/engines/weibo.ts
 var SEARCH_URL16 = "https://s.weibo.com/weibo";
-var USER_AGENT30 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT31 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 function makeWeibo(config) {
   return {
     name: config.name,
@@ -33143,7 +33202,7 @@ function makeWeibo(config) {
 function searchWeibo(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL16}?q=${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT30,
+      "User-Agent": USER_AGENT31,
       "Accept-Language": "zh-CN,zh;q=0.9",
       Accept: "text/html",
       Referer: "https://s.weibo.com/"
@@ -33185,7 +33244,7 @@ function parseWeiboResults(html, maxResults) {
 
 // src/search/engines/reddit.ts
 var SEARCH_URL17 = "https://www.reddit.com/search";
-var USER_AGENT31 = "opencode-search/1.0 (by /u/opencode)";
+var USER_AGENT32 = "opencode-search/1.0 (by /u/opencode)";
 function makeReddit(config) {
   return {
     name: config.name,
@@ -33196,7 +33255,7 @@ function makeReddit(config) {
 function searchReddit(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL17}/?q=${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT31,
+      "User-Agent": USER_AGENT32,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -33227,7 +33286,7 @@ function parseRedditResults(html, maxResults) {
 
 // src/search/engines/vimeo.ts
 var SEARCH_URL18 = "https://vimeo.com/search";
-var USER_AGENT32 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var USER_AGENT33 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeVimeo(config) {
   return {
     name: config.name,
@@ -33237,7 +33296,7 @@ function makeVimeo(config) {
 }
 function searchVimeo(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL18}?q=${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT32, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL18}?q=${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT33, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
     const html = yield* response.text;
@@ -33266,7 +33325,7 @@ function parseVimeoResults(html, maxResults) {
 
 // src/search/engines/stackexchange.ts
 var API_URL7 = "https://api.stackexchange.com/2.3/search";
-var USER_AGENT33 = "opencode-search/1.0";
+var USER_AGENT34 = "opencode-search/1.0";
 function makeStackExchange(config) {
   return {
     name: config.name,
@@ -33284,7 +33343,7 @@ function searchStackExchange(http, query, numResults, timeout3) {
       pagesize: String(Math.min(numResults, 20)),
       filter: "withbody"
     });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL7}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT33, Accept: "application/json" }))).pipe(exports_Effect.timeout(timeout3));
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL7}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT34, Accept: "application/json" }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
     const raw2 = yield* response.text;
@@ -33789,7 +33848,7 @@ function parseTwitterDirectResults(html, maxResults) {
 
 // src/search/engines/huggingface.ts
 var BASE_URL2 = "https://huggingface.co";
-var USER_AGENT34 = "opencode-search/1.0";
+var USER_AGENT35 = "opencode-search/1.0";
 function makeHuggingFace(config, endpoint = "models") {
   return {
     name: config.name,
@@ -33804,7 +33863,7 @@ function searchHuggingFace(http, query, numResults, timeout3, endpoint) {
       direction: "-1"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL2}/api/${endpoint}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT34,
+      "User-Agent": USER_AGENT35,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -33862,7 +33921,7 @@ function parseHuggingFaceResults(raw2, maxResults, endpoint) {
 }
 
 // src/search/engines/gitlab.ts
-var USER_AGENT35 = "opencode-search/1.0";
+var USER_AGENT36 = "opencode-search/1.0";
 function makeGitLab(config, baseUrl2 = "https://gitlab.com") {
   return {
     name: config.name,
@@ -33879,7 +33938,7 @@ function searchGitLab(http, query, numResults, timeout3, baseUrl2) {
       sort: "desc"
     });
     const headers = {
-      "User-Agent": USER_AGENT35,
+      "User-Agent": USER_AGENT36,
       Accept: "application/json"
     };
     const token = process.env.GITLAB_TOKEN;
@@ -33937,7 +33996,7 @@ function parseGitLabResults(raw2, maxResults) {
 
 // src/search/engines/imdb.ts
 var SUGGESTION_URL = "https://v2.sg.media-imdb.com/suggestion";
-var USER_AGENT36 = "opencode-search/1.0";
+var USER_AGENT37 = "opencode-search/1.0";
 function makeIMDb(config) {
   return {
     name: config.name,
@@ -33950,7 +34009,7 @@ function searchIMDb(http, query, numResults, timeout3) {
     const normalizedQuery = query.replace(/\s+/g, "_").toLowerCase();
     const letter = normalizedQuery[0] || "a";
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SUGGESTION_URL}/${letter}/${encodeURIComponent(normalizedQuery)}.json`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT36,
+      "User-Agent": USER_AGENT37,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -34022,7 +34081,7 @@ function parseIMDbResults(raw2, maxResults) {
 
 // src/search/engines/google-play.ts
 var BASE_URL3 = "https://play.google.com";
-var USER_AGENT37 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT38 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeGooglePlay(config) {
   return {
     name: config.name,
@@ -34034,7 +34093,7 @@ function searchGooglePlay(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query, c: "apps" });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL3}/store/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT37,
+      "User-Agent": USER_AGENT38,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -34116,7 +34175,7 @@ function parseGooglePlayResults(html, maxResults) {
 
 // src/search/engines/goodreads.ts
 var BASE_URL4 = "https://www.goodreads.com";
-var USER_AGENT38 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT39 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeGoodreads(config) {
   return {
     name: config.name,
@@ -34128,7 +34187,7 @@ function searchGoodreads(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL4}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT38,
+      "User-Agent": USER_AGENT39,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -34193,7 +34252,7 @@ function parseGoodreadsResults(html, maxResults) {
 
 // src/search/engines/crates.ts
 var API_URL8 = "https://crates.io/api/v1/crates";
-var USER_AGENT39 = "opencode-search/1.0";
+var USER_AGENT40 = "opencode-search/1.0";
 function makeCrates(config) {
   return {
     name: config.name,
@@ -34208,7 +34267,7 @@ function searchCrates(http, query, numResults, timeout3) {
       per_page: String(Math.min(numResults, 50))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL8}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT39,
+      "User-Agent": USER_AGENT40,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -34262,7 +34321,7 @@ function parseCratesResults(raw2, maxResults) {
 
 // src/search/engines/pypi.ts
 var BASE_URL5 = "https://pypi.org";
-var USER_AGENT40 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT41 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makePyPIHtml(config) {
   return {
     name: config.name,
@@ -34274,7 +34333,7 @@ function searchPyPI(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL5}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT40,
+      "User-Agent": USER_AGENT41,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -34337,7 +34396,7 @@ function parsePyPIResults(html, maxResults) {
 // src/search/engines/openlibrary.ts
 var API_URL9 = "https://openlibrary.org/search.json";
 var BASE_URL6 = "https://openlibrary.org";
-var USER_AGENT41 = "opencode-search/1.0";
+var USER_AGENT42 = "opencode-search/1.0";
 function makeOpenLibrary(config) {
   return {
     name: config.name,
@@ -34353,7 +34412,7 @@ function searchOpenLibrary(http, query, numResults, timeout3) {
       fields: "*"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL9}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT41,
+      "User-Agent": USER_AGENT42,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -34413,7 +34472,7 @@ function parseOpenLibraryResults(raw2, maxResults) {
 
 // src/search/engines/wallhaven.ts
 var API_URL10 = "https://wallhaven.cc/api/v1/search";
-var USER_AGENT42 = "opencode-search/1.0";
+var USER_AGENT43 = "opencode-search/1.0";
 function makeWallhaven(config) {
   return {
     name: config.name,
@@ -34428,7 +34487,7 @@ function searchWallhaven(http, query, numResults, timeout3) {
       purity: "110"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL10}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT42,
+      "User-Agent": USER_AGENT43,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -34474,7 +34533,7 @@ function parseWallhavenResults(raw2, maxResults) {
 
 // src/search/engines/crossref.ts
 var API_URL11 = "https://api.crossref.org/works";
-var USER_AGENT43 = "opencode-search/1.0 (mailto:search@opencode.ai)";
+var USER_AGENT44 = "opencode-search/1.0 (mailto:search@opencode.ai)";
 function makeCrossRef(config) {
   return {
     name: config.name,
@@ -34489,7 +34548,7 @@ function searchCrossRef(http, query, numResults, timeout3) {
       rows: String(Math.min(numResults, 50))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL11}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT43,
+      "User-Agent": USER_AGENT44,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -34562,7 +34621,7 @@ function parseCrossRefResults(raw2, maxResults) {
 
 // src/search/engines/openverse.ts
 var API_URL12 = "https://api.openverse.org/v1/images/";
-var USER_AGENT44 = "opencode-search/1.0";
+var USER_AGENT45 = "opencode-search/1.0";
 function makeOpenverse(config) {
   return {
     name: config.name,
@@ -34577,7 +34636,7 @@ function searchOpenverse(http, query, numResults, timeout3) {
       page_size: String(Math.min(numResults, 50))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL12}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT44,
+      "User-Agent": USER_AGENT45,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -34629,7 +34688,7 @@ function parseOpenverseResults(raw2, maxResults) {
 
 // src/search/engines/ebay.ts
 var BASE_URL7 = "https://www.ebay.com";
-var USER_AGENT45 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT46 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeEbay(config) {
   return {
     name: config.name,
@@ -34644,7 +34703,7 @@ function searchEbay(http, query, numResults, timeout3) {
       _sacat: "0"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL7}/sch/i.html?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT45,
+      "User-Agent": USER_AGENT46,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -34703,7 +34762,7 @@ function parseEbayResults(html, maxResults) {
 
 // src/search/engines/pinterest.ts
 var BASE_URL8 = "https://www.pinterest.com";
-var USER_AGENT46 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT47 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makePinterest(config) {
   return {
     name: config.name,
@@ -34721,7 +34780,7 @@ function searchPinterest(http, query, numResults, timeout3) {
       context: {}
     };
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL8}/resource/BaseSearchResource/get/?data=${encodeURIComponent(JSON.stringify(args2))}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT46,
+      "User-Agent": USER_AGENT47,
       Accept: "application/json",
       "X-Pinterest-AppState": "active",
       "X-Pinterest-Source-Url": "/ideas/",
@@ -34777,7 +34836,7 @@ function parsePinterestResults(raw2, maxResults) {
 
 // src/search/engines/qwant.ts
 var API_URL13 = "https://api.qwant.com/v3/search/web";
-var USER_AGENT47 = "opencode-search/1.0";
+var USER_AGENT48 = "opencode-search/1.0";
 function makeQwant(config) {
   return {
     name: config.name,
@@ -34799,7 +34858,7 @@ function searchQwant(http, query, numResults, timeout3) {
       llm: "true"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL13}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT47,
+      "User-Agent": USER_AGENT48,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -34852,7 +34911,7 @@ function parseQwantResults(raw2, maxResults) {
 
 // src/search/engines/yahoo.ts
 var BASE_URL9 = "https://search.yahoo.com";
-var USER_AGENT48 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT49 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeYahoo(config) {
   return {
     name: config.name,
@@ -34864,7 +34923,7 @@ function searchYahoo(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ p: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL9}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT48,
+      "User-Agent": USER_AGENT49,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -34935,7 +34994,7 @@ function parseYahooResults(html, maxResults) {
 
 // src/search/engines/rottentomatoes.ts
 var BASE_URL10 = "https://www.rottentomatoes.com";
-var USER_AGENT49 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT50 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeRottenTomatoes(config) {
   return {
     name: config.name,
@@ -34947,7 +35006,7 @@ function searchRottenTomatoes(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ search: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL10}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT49,
+      "User-Agent": USER_AGENT50,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -35007,7 +35066,7 @@ function parseRottenTomatoesResults(html, maxResults) {
 
 // src/search/engines/steam.ts
 var API_URL14 = "https://store.steampowered.com/api/storesearch/";
-var USER_AGENT50 = "opencode-search/1.0";
+var USER_AGENT51 = "opencode-search/1.0";
 function makeSteam(config) {
   return {
     name: config.name,
@@ -35023,7 +35082,7 @@ function searchSteam(http, query, numResults, timeout3) {
       l: "en"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL14}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT50,
+      "User-Agent": USER_AGENT51,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -35075,7 +35134,7 @@ function parseSteamResults(raw2, maxResults) {
 
 // src/search/engines/pexels.ts
 var BASE_URL11 = "https://www.pexels.com";
-var USER_AGENT51 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT52 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makePexels(config) {
   return {
     name: config.name,
@@ -35086,7 +35145,7 @@ function makePexels(config) {
 function searchPexels(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL11}/en-us/search/${encodeURIComponent(query)}/`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT51,
+      "User-Agent": USER_AGENT52,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -35146,7 +35205,7 @@ function parsePexelsResults(html, maxResults) {
 
 // src/search/engines/openalex.ts
 var API_URL15 = "https://api.openalex.org/works";
-var USER_AGENT52 = "opencode-search/1.0 (mailto:search@opencode.ai)";
+var USER_AGENT53 = "opencode-search/1.0 (mailto:search@opencode.ai)";
 function makeOpenAlex(config) {
   return {
     name: config.name,
@@ -35162,7 +35221,7 @@ function searchOpenAlex(http, query, numResults, timeout3) {
       sort: "relevance_score:desc"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL15}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT52,
+      "User-Agent": USER_AGENT53,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -35221,7 +35280,7 @@ function parseOpenAlexResults(raw2, maxResults) {
 // src/search/engines/niconico.ts
 var BASE_URL12 = "https://www.nicovideo.jp";
 var EMBED_URL = "https://embed.nicovideo.jp";
-var USER_AGENT53 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT54 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeNiconico(config) {
   return {
     name: config.name,
@@ -35232,7 +35291,7 @@ function makeNiconico(config) {
 function searchNiconico(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL12}/search/${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT53,
+      "User-Agent": USER_AGENT54,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -35296,7 +35355,7 @@ function parseNiconicoResults(html, maxResults) {
 
 // src/search/engines/deviantart.ts
 var BASE_URL13 = "https://www.deviantart.com";
-var USER_AGENT54 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT55 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeDeviantArt(config) {
   return {
     name: config.name,
@@ -35308,7 +35367,7 @@ function searchDeviantArt(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL13}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT54,
+      "User-Agent": USER_AGENT55,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -35367,7 +35426,7 @@ function parseDeviantArtResults(html, maxResults) {
 }
 
 // src/search/engines/google-videos.ts
-var USER_AGENT55 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT56 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeGoogleVideos(config) {
   return {
     name: config.name,
@@ -35382,7 +35441,7 @@ function searchGoogleVideos(http, query, numResults, timeout3) {
       tbm: "vid"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`https://www.google.com/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT55,
+      "User-Agent": USER_AGENT56,
       Accept: "text/html",
       "Accept-Language": "en-US,en;q=0.9",
       Cookie: "CONSENT=YES+"
@@ -35430,7 +35489,7 @@ function parseGoogleVideosResults(html, maxResults) {
 
 // src/search/engines/bandcamp.ts
 var BASE_URL14 = "https://bandcamp.com";
-var USER_AGENT56 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT57 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeBandcamp(config) {
   return {
     name: config.name,
@@ -35442,7 +35501,7 @@ function searchBandcamp(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL14}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT56,
+      "User-Agent": USER_AGENT57,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -35482,7 +35541,7 @@ function parseBandcampResults(html, maxResults) {
 
 // src/search/engines/genius.ts
 var API_URL16 = "https://genius.com/api/search";
-var USER_AGENT57 = "opencode-search/1.0";
+var USER_AGENT58 = "opencode-search/1.0";
 function makeGenius(config) {
   return {
     name: config.name,
@@ -35497,7 +35556,7 @@ function searchGenius(http, query, numResults, timeout3) {
       per_page: String(Math.min(numResults, 20))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL16}/multi?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT57,
+      "User-Agent": USER_AGENT58,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -35566,7 +35625,7 @@ function parseGeniusResults(raw2, maxResults) {
 
 // src/search/engines/imgur.ts
 var BASE_URL15 = "https://imgur.com";
-var USER_AGENT58 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT59 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeImgur(config) {
   return {
     name: config.name,
@@ -35582,7 +35641,7 @@ function searchImgur(http, query, numResults, timeout3) {
       p: "0"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL15}/search/score/all?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT58,
+      "User-Agent": USER_AGENT59,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -35623,7 +35682,7 @@ function parseImgurResults(html, maxResults) {
 
 // src/search/engines/rumble.ts
 var BASE_URL16 = "https://rumble.com";
-var USER_AGENT59 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT60 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeRumble(config) {
   return {
     name: config.name,
@@ -35635,7 +35694,7 @@ function searchRumble(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL16}/search/video?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT59,
+      "User-Agent": USER_AGENT60,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -35676,7 +35735,7 @@ function parseRumbleResults(html, maxResults) {
 
 // src/search/engines/pkg-go-dev.ts
 var BASE_URL17 = "https://pkg.go.dev";
-var USER_AGENT60 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT61 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makePkgGoDev(config) {
   return {
     name: config.name,
@@ -35691,7 +35750,7 @@ function searchPkgGoDev(http, query, numResults, timeout3) {
       m: "package"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL17}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT60,
+      "User-Agent": USER_AGENT61,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -35731,7 +35790,7 @@ function parsePkgGoDevResults(html, maxResults) {
 
 // src/search/engines/peertube.ts
 var API_URL17 = "https://peer.tube/api/v1/search/videos";
-var USER_AGENT61 = "opencode-search/1.0";
+var USER_AGENT62 = "opencode-search/1.0";
 function makePeerTube(config) {
   return {
     name: config.name,
@@ -35750,7 +35809,7 @@ function searchPeerTube(http, query, numResults, timeout3) {
       nsfw: "both"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL17}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT61,
+      "User-Agent": USER_AGENT62,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -35810,7 +35869,7 @@ function parsePeerTubeResults(raw2, maxResults) {
 
 // src/search/engines/pixiv.ts
 var BASE_URL18 = "https://www.pixiv.net";
-var USER_AGENT62 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT63 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makePixiv(config) {
   return {
     name: config.name,
@@ -35830,7 +35889,7 @@ function searchPixiv(http, query, numResults, timeout3) {
       lang: "en"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL18}/ajax/search/illustrations/${encodeURIComponent(query)}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT62,
+      "User-Agent": USER_AGENT63,
       Accept: "application/json",
       Referer: `${BASE_URL18}/`
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -35877,7 +35936,7 @@ function parsePixivResults(raw2, maxResults) {
 
 // src/search/engines/deezer.ts
 var API_URL18 = "https://api.deezer.com/search";
-var USER_AGENT63 = "opencode-search/1.0";
+var USER_AGENT64 = "opencode-search/1.0";
 function makeDeezer(config) {
   return {
     name: config.name,
@@ -35892,7 +35951,7 @@ function searchDeezer(http, query, numResults, timeout3) {
       limit: String(Math.min(numResults, 25))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL18}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT63,
+      "User-Agent": USER_AGENT64,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -35942,7 +36001,7 @@ function parseDeezerResults(raw2, maxResults) {
 
 // src/search/engines/reuters.ts
 var BASE_URL19 = "https://www.reuters.com";
-var USER_AGENT64 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT65 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeReuters(config) {
   return {
     name: config.name,
@@ -35963,7 +36022,7 @@ function searchReuters(http, query, numResults, timeout3) {
       query: JSON.stringify(args2)
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL19}/pf/api/v3/content/fetch/articles-by-search-v2?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT64,
+      "User-Agent": USER_AGENT65,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36010,7 +36069,7 @@ function parseReutersResults(raw2, maxResults) {
 
 // src/search/engines/wttr.ts
 var API_URL19 = "https://wttr.in";
-var USER_AGENT65 = "opencode-search/1.0";
+var USER_AGENT66 = "opencode-search/1.0";
 function makeWttr(config) {
   return {
     name: config.name,
@@ -36025,7 +36084,7 @@ function searchWttr(http, query, numResults, timeout3) {
       lang: "en"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL19}/${encodeURIComponent(query)}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT65,
+      "User-Agent": USER_AGENT66,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36125,7 +36184,7 @@ function parseWttrResults(raw2, query, maxResults) {
 
 // src/search/engines/yahoo-news.ts
 var BASE_URL20 = "https://news.search.yahoo.com";
-var USER_AGENT66 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT67 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeYahooNews(config) {
   return {
     name: config.name,
@@ -36137,7 +36196,7 @@ function searchYahooNews(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ p: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL20}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT66,
+      "User-Agent": USER_AGENT67,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36176,7 +36235,7 @@ function parseYahooNewsResults(html, maxResults) {
 
 // src/search/engines/mixcloud.ts
 var API_URL20 = "https://api.mixcloud.com/search/";
-var USER_AGENT67 = "opencode-search/1.0";
+var USER_AGENT68 = "opencode-search/1.0";
 function makeMixcloud(config) {
   return {
     name: config.name,
@@ -36192,7 +36251,7 @@ function searchMixcloud(http, query, numResults, timeout3) {
       limit: String(Math.min(numResults, 10))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL20}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT67,
+      "User-Agent": USER_AGENT68,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36238,7 +36297,7 @@ function parseMixcloudResults(raw2, maxResults) {
 
 // src/search/engines/lib-rs.ts
 var BASE_URL21 = "https://lib.rs";
-var USER_AGENT68 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT69 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeLibRs(config) {
   return {
     name: config.name,
@@ -36250,7 +36309,7 @@ function searchLibRs(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL21}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT68,
+      "User-Agent": USER_AGENT69,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36290,7 +36349,7 @@ function parseLibRsResults(html, maxResults) {
 
 // src/search/engines/fdroid.ts
 var BASE_URL22 = "https://search.f-droid.org";
-var USER_AGENT69 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT70 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeFDroid(config) {
   return {
     name: config.name,
@@ -36305,7 +36364,7 @@ function searchFDroid(http, query, numResults, timeout3) {
       lang: ""
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL22}/?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT69,
+      "User-Agent": USER_AGENT70,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36345,7 +36404,7 @@ function parseFDroidResults(html, maxResults) {
 
 // src/search/engines/mastodon.ts
 var API_URL21 = "https://mastodon.social/api/v2/search";
-var USER_AGENT70 = "opencode-search/1.0";
+var USER_AGENT71 = "opencode-search/1.0";
 function makeMastodon(config) {
   return {
     name: config.name,
@@ -36362,7 +36421,7 @@ function searchMastodon(http, query, numResults, timeout3) {
       limit: String(Math.min(numResults, 40))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL21}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT70,
+      "User-Agent": USER_AGENT71,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36409,7 +36468,7 @@ function parseMastodonResults(raw2, maxResults) {
 
 // src/search/engines/currency-convert.ts
 var BASE_URL23 = "https://duckduckgo.com/js/spice/currency";
-var USER_AGENT71 = "opencode-search/1.0";
+var USER_AGENT72 = "opencode-search/1.0";
 function makeCurrencyConvert(config) {
   return {
     name: config.name,
@@ -36426,7 +36485,7 @@ function searchCurrencyConvert(http, query, _numResults, timeout3) {
     const from = (currencyMatch[2] || currencyMatch[5] || currencyMatch[7]).toUpperCase();
     const to = (currencyMatch[3] || currencyMatch[6] || currencyMatch[8]).toUpperCase();
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL23}/1/${from}/${to}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT71,
+      "User-Agent": USER_AGENT72,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36468,7 +36527,7 @@ function parseCurrencyResults(raw2, query, from, to, amount = 1) {
 
 // src/search/engines/artstation.ts
 var BASE_URL24 = "https://www.artstation.com";
-var USER_AGENT72 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT73 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeArtStation(config) {
   return {
     name: config.name,
@@ -36480,7 +36539,7 @@ function searchArtStation(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL24}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT72,
+      "User-Agent": USER_AGENT73,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36547,7 +36606,7 @@ function parseArtStationResults(html, maxResults) {
 
 // src/search/engines/wikidata.ts
 var API_URL22 = "https://www.wikidata.org/w/api.php";
-var USER_AGENT73 = "opencode-search/1.0";
+var USER_AGENT74 = "opencode-search/1.0";
 function makeWikidata(config) {
   return {
     name: config.name,
@@ -36565,7 +36624,7 @@ function searchWikidata(http, query, numResults, timeout3) {
       format: "json"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL22}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT73,
+      "User-Agent": USER_AGENT74,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36610,7 +36669,7 @@ function parseWikidataResults(raw2, maxResults) {
 
 // src/search/engines/wikicommons.ts
 var API_URL23 = "https://commons.wikimedia.org/w/api.php";
-var USER_AGENT74 = "opencode-search/1.0";
+var USER_AGENT75 = "opencode-search/1.0";
 function makeWikimediaCommons(config) {
   return {
     name: config.name,
@@ -36628,7 +36687,7 @@ function searchWikimediaCommons(http, query, numResults, timeout3) {
       format: "json"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL23}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT74,
+      "User-Agent": USER_AGENT75,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36675,7 +36734,7 @@ function parseWikimediaCommonsResults(raw2, maxResults) {
 
 // src/search/engines/metacpan.ts
 var API_URL24 = "https://fastapi.metacpan.org/v1/module/_search";
-var USER_AGENT75 = "opencode-search/1.0";
+var USER_AGENT76 = "opencode-search/1.0";
 function makeMetacpan(config) {
   return {
     name: config.name,
@@ -36691,7 +36750,7 @@ function searchMetacpan(http, query, numResults, timeout3) {
       from: "0"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL24}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT75,
+      "User-Agent": USER_AGENT76,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36748,7 +36807,7 @@ function parseMetacpanResults(raw2, maxResults) {
 
 // src/search/engines/archlinux.ts
 var BASE_URL25 = "https://wiki.archlinux.org";
-var USER_AGENT76 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT77 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeArchLinux(config) {
   return {
     name: config.name,
@@ -36766,7 +36825,7 @@ function searchArchLinux(http, query, numResults, timeout3) {
       profile: "default"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL25}/index.php?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT76,
+      "User-Agent": USER_AGENT77,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36806,7 +36865,7 @@ function parseArchLinuxResults(html, maxResults) {
 
 // src/search/engines/alpinelinux.ts
 var BASE_URL26 = "https://pkgs.alpinelinux.org";
-var USER_AGENT77 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT78 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeAlpineLinux(config) {
   return {
     name: config.name,
@@ -36821,7 +36880,7 @@ function searchAlpineLinux(http, query, numResults, timeout3) {
       arch: "x86_64"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL26}/packages?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT77,
+      "User-Agent": USER_AGENT78,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36861,7 +36920,7 @@ function parseAlpineLinuxResults(html, maxResults) {
 
 // src/search/engines/voidlinux.ts
 var API_URL25 = "https://xq-api.voidlinux.org/v1/query/x86_64";
-var USER_AGENT78 = "opencode-search/1.0";
+var USER_AGENT79 = "opencode-search/1.0";
 function makeVoidLinux(config) {
   return {
     name: config.name,
@@ -36873,7 +36932,7 @@ function searchVoidLinux(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL25}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT78,
+      "User-Agent": USER_AGENT79,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36927,7 +36986,7 @@ function parseVoidLinuxResults(raw2, maxResults) {
   return results;
 }
 // src/search/engines/500px.ts
-var USER_AGENT79 = "opencode-search/1.0";
+var USER_AGENT80 = "opencode-search/1.0";
 function make500px(config) {
   return {
     name: config.name,
@@ -36944,7 +37003,7 @@ function search500px(http, query, numResults, timeout3) {
       page: "1"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`https://500px.com/api/resources/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT79,
+      "User-Agent": USER_AGENT80,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -36996,7 +37055,7 @@ function parse500pxResults(raw2, maxResults) {
 
 // src/search/engines/freesound.ts
 var API_URL26 = "https://freesound.org/apiv2/search/text/";
-var USER_AGENT80 = "opencode-search/1.0";
+var USER_AGENT81 = "opencode-search/1.0";
 function makeFreesound(config) {
   return {
     name: config.name,
@@ -37013,7 +37072,7 @@ function searchFreesound(http, query, numResults, timeout3) {
       page: "1"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL26}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT80,
+      "User-Agent": USER_AGENT81,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -37069,7 +37128,7 @@ function parseFreesoundResults(raw2, maxResults) {
 // src/search/engines/spotify.ts
 var API_URL27 = "https://api.spotify.com/v1/search";
 var WEB_URL = "https://open.spotify.com/search";
-var USER_AGENT81 = "opencode-search/1.0";
+var USER_AGENT82 = "opencode-search/1.0";
 function makeSpotify(config) {
   return {
     name: config.name,
@@ -37098,7 +37157,7 @@ function searchSpotify(http, query, numResults, timeout3) {
       }
     }
     const response = yield* http.execute(exports_HttpClientRequest.get(`${WEB_URL}/${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT81,
+      "User-Agent": USER_AGENT82,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -37189,7 +37248,7 @@ function parseSpotifyHtmlResults(html, maxResults) {
 // src/search/engines/open-meteo.ts
 var GEO_URL = "https://geocoding-api.open-meteo.com";
 var API_URL28 = "https://api.open-meteo.com";
-var USER_AGENT82 = "opencode-search/1.0";
+var USER_AGENT83 = "opencode-search/1.0";
 function makeOpenMeteo(config) {
   return {
     name: config.name,
@@ -37206,7 +37265,7 @@ function searchOpenMeteo(http, query, numResults, timeout3) {
       format: "json"
     });
     const geoResponse = yield* http.execute(exports_HttpClientRequest.get(`${GEO_URL}/v1/search?${geoParams.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT82,
+      "User-Agent": USER_AGENT83,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (geoResponse.status < 200 || geoResponse.status >= 400)
@@ -37234,7 +37293,7 @@ function searchOpenMeteo(http, query, numResults, timeout3) {
       forecast_days: "3"
     });
     const weatherResponse = yield* http.execute(exports_HttpClientRequest.get(`${API_URL28}/v1/forecast?${weatherParams.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT82,
+      "User-Agent": USER_AGENT83,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (weatherResponse.status < 200 || weatherResponse.status >= 400)
@@ -37302,7 +37361,7 @@ function parseOpenMeteoResults(raw2, location2, maxResults) {
 
 // src/search/engines/lemmy.ts
 var API_URL29 = "https://lemmy.ml/api/v3/search";
-var USER_AGENT83 = "opencode-search/1.0";
+var USER_AGENT84 = "opencode-search/1.0";
 function makeLemmy(config) {
   return {
     name: config.name,
@@ -37318,7 +37377,7 @@ function searchLemmy(http, query, numResults, timeout3) {
       limit: String(Math.min(numResults, 50))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL29}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT83,
+      "User-Agent": USER_AGENT84,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -37376,7 +37435,7 @@ function parseLemmyResults(raw2, maxResults) {
 
 // src/search/engines/startpage.ts
 var BASE_URL27 = "https://www.startpage.com";
-var USER_AGENT84 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT85 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeStartpage(config) {
   return {
     name: config.name,
@@ -37392,7 +37451,7 @@ function searchStartpage(http, query, numResults, timeout3) {
       language: "english"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL27}/do/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT84,
+      "User-Agent": USER_AGENT85,
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.9"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -37450,7 +37509,7 @@ function parseStartpageResults(html, maxResults) {
 
 // src/search/engines/chinaso.ts
 var BASE_URL28 = "https://www.chinaso.com";
-var USER_AGENT85 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT86 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeChinaso(config) {
   return {
     name: config.name,
@@ -37464,7 +37523,7 @@ function searchChinaso(http, query, numResults, timeout3) {
       q: query
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL28}/search/?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT85,
+      "User-Agent": USER_AGENT86,
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -37526,7 +37585,7 @@ var PIPED_INSTANCES = [
   "https://pipedapi.adminforge.de",
   "https://api.piped.yt"
 ];
-var USER_AGENT86 = "opencode-search/1.0";
+var USER_AGENT87 = "opencode-search/1.0";
 function makePiped(config) {
   return {
     name: config.name,
@@ -37546,7 +37605,7 @@ function searchPiped(http, query, numResults, timeout3) {
       });
       try {
         const response = yield* http.execute(exports_HttpClientRequest.get(`${instance}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-          "User-Agent": USER_AGENT86,
+          "User-Agent": USER_AGENT87,
           Accept: "application/json"
         }))).pipe(exports_Effect.timeout(timeout3));
         if (response.status < 200 || response.status >= 400)
@@ -37629,7 +37688,7 @@ var INVIDIOUS_INSTANCES = [
   "https://invidious.nerdvpn.de",
   "https://invidious.privacyredirect.com"
 ];
-var USER_AGENT87 = "opencode-search/1.0";
+var USER_AGENT88 = "opencode-search/1.0";
 function makeInvidious(config) {
   return {
     name: config.name,
@@ -37649,7 +37708,7 @@ function searchInvidious(http, query, numResults, timeout3) {
       });
       try {
         const response = yield* http.execute(exports_HttpClientRequest.get(`${instance}/api/v1/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-          "User-Agent": USER_AGENT87,
+          "User-Agent": USER_AGENT88,
           Accept: "application/json"
         }))).pipe(exports_Effect.timeout(timeout3));
         if (response.status < 200 || response.status >= 400)
@@ -37727,7 +37786,7 @@ function formatDuration2(seconds2) {
 }
 
 // src/search/engines/discourse.ts
-var USER_AGENT88 = "opencode-search/1.0";
+var USER_AGENT89 = "opencode-search/1.0";
 function makeDiscourse(config, baseUrl2 = "https://meta.discourse.org") {
   return {
     name: config.name,
@@ -37741,7 +37800,7 @@ function searchDiscourse(http, query, numResults, timeout3, baseUrl2) {
       q: `${query} order:latest`
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${baseUrl2}/search.json?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT88,
+      "User-Agent": USER_AGENT89,
       Accept: "application/json",
       "X-Requested-With": "XMLHttpRequest"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -37810,7 +37869,7 @@ function parseDiscourseResults(raw2, maxResults, baseUrl2) {
 
 // src/search/engines/quark.ts
 var BASE_URL29 = "https://quark.sm.cn";
-var USER_AGENT89 = "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+var USER_AGENT90 = "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
 function makeQuark(config) {
   return {
     name: config.name,
@@ -37826,7 +37885,7 @@ function searchQuark(http, query, numResults, timeout3) {
       safe: "1"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL29}/s?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT89,
+      "User-Agent": USER_AGENT90,
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -37885,7 +37944,7 @@ function parseQuarkResults(html, maxResults) {
 // src/search/engines/odysee.ts
 var API_URL30 = "https://api.na-backend.odysee.com/api/v1/proxy";
 var WEB_URL2 = "https://odysee.com";
-var USER_AGENT90 = "opencode-search/1.0";
+var USER_AGENT91 = "opencode-search/1.0";
 function makeOdysee(config) {
   return {
     name: config.name,
@@ -37906,7 +37965,7 @@ function searchOdysee(http, query, numResults, timeout3) {
       }
     });
     const response = yield* http.execute(exports_HttpClientRequest.post(API_URL30).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT90,
+      "User-Agent": USER_AGENT91,
       "Content-Type": "application/json",
       Accept: "application/json"
     }), exports_HttpClientRequest.bodyText(body))).pipe(exports_Effect.timeout(timeout3));
@@ -37980,7 +38039,7 @@ function formatDuration3(seconds2) {
 
 // src/search/engines/boardreader.ts
 var BASE_URL30 = "https://boardreader.com";
-var USER_AGENT91 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT92 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeBoardreader(config) {
   return {
     name: config.name,
@@ -37994,7 +38053,7 @@ function searchBoardreader(http, query, numResults, timeout3) {
       q: query
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL30}/search.php?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT91,
+      "User-Agent": USER_AGENT92,
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -38053,7 +38112,7 @@ function parseBoardreaderResults(html, maxResults) {
 
 // src/search/engines/mwmbl.ts
 var API_URL31 = "https://api.mwmbl.me/search";
-var USER_AGENT92 = "opencode-search/1.0";
+var USER_AGENT93 = "opencode-search/1.0";
 function makeMwmbl(config) {
   return {
     name: config.name,
@@ -38067,7 +38126,7 @@ function searchMwmbl(http, query, numResults, timeout3) {
       q: query
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL31}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT92,
+      "User-Agent": USER_AGENT93,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -38113,7 +38172,7 @@ function parseMwmblResults(raw2, maxResults) {
 
 // src/search/engines/seznam.ts
 var BASE_URL31 = "https://search.seznam.cz";
-var USER_AGENT93 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT94 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeSeznam(config) {
   return {
     name: config.name,
@@ -38127,7 +38186,7 @@ function searchSeznam(http, query, numResults, timeout3) {
       q: query
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL31}/?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT93,
+      "User-Agent": USER_AGENT94,
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "cs,en;q=0.9"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -38185,7 +38244,7 @@ function parseSeznamResults(html, maxResults) {
 
 // src/search/engines/aol.ts
 var BASE_URL32 = "https://search.aol.com";
-var USER_AGENT94 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT95 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeAol(config) {
   return {
     name: config.name,
@@ -38199,7 +38258,7 @@ function searchAol(http, query, numResults, timeout3) {
       q: query
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL32}/aol/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT94,
+      "User-Agent": USER_AGENT95,
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -38256,7 +38315,7 @@ function parseAolResults(html, maxResults) {
 
 // src/search/engines/gmx.ts
 var BASE_URL33 = "https://suche.gmx.net";
-var USER_AGENT95 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT96 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeGmx(config) {
   return {
     name: config.name,
@@ -38270,7 +38329,7 @@ function searchGmx(http, query, numResults, timeout3) {
       q: query
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL33}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT95,
+      "User-Agent": USER_AGENT96,
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "de,en;q=0.9"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -38328,7 +38387,7 @@ function parseGmxResults(html, maxResults) {
 
 // src/search/engines/yep.ts
 var BASE_URL34 = "https://yep.com";
-var USER_AGENT96 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT97 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeYep(config) {
   return {
     name: config.name,
@@ -38342,7 +38401,7 @@ function searchYep(http, query, numResults, timeout3) {
       q: query
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL34}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT96,
+      "User-Agent": USER_AGENT97,
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -38399,7 +38458,7 @@ function parseYepResults(html, maxResults) {
 
 // src/search/engines/tineye.ts
 var BASE_URL35 = "https://tineye.com";
-var USER_AGENT97 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT98 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeTinEye(config) {
   return {
     name: config.name,
@@ -38413,7 +38472,7 @@ function searchTinEye(http, query, numResults, timeout3) {
       url: query
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL35}/api/v1/result_json/?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT97,
+      "User-Agent": USER_AGENT98,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -38463,7 +38522,7 @@ function parseTinEyeResults(raw2, maxResults) {
 
 // src/search/engines/yandex-music.ts
 var BASE_URL36 = "https://music.yandex.ru";
-var USER_AGENT98 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT99 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeYandexMusic(config) {
   return {
     name: config.name,
@@ -38478,7 +38537,7 @@ function searchYandexMusic(http, query, numResults, timeout3) {
       page: "0"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL36}/handlers/music-search.jsx?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT98,
+      "User-Agent": USER_AGENT99,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -38530,7 +38589,7 @@ function parseYandexMusicResults(raw2, maxResults) {
 
 // src/search/engines/lingva.ts
 var BASE_URL37 = "https://lingva.ml";
-var USER_AGENT99 = "opencode-search/1.0";
+var USER_AGENT100 = "opencode-search/1.0";
 function makeLingva(config) {
   return {
     name: config.name,
@@ -38553,7 +38612,7 @@ function searchLingva(http, query, numResults, timeout3) {
       toLang = parts2[1];
     }
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL37}/api/v1/${fromLang}/${toLang}/${encodeURIComponent(text2)}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT99,
+      "User-Agent": USER_AGENT100,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -38612,7 +38671,7 @@ function parseLingvaResults(raw2, query, fromLang, toLang) {
 
 // src/search/engines/libretranslate.ts
 var API_URL32 = "https://libretranslate.com/translate";
-var USER_AGENT100 = "opencode-search/1.0";
+var USER_AGENT101 = "opencode-search/1.0";
 function makeLibreTranslate(config) {
   return {
     name: config.name,
@@ -38641,7 +38700,7 @@ function searchLibreTranslate(http, query, numResults, timeout3) {
       alternatives: 3
     });
     const response = yield* http.execute(exports_HttpClientRequest.post(API_URL32).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT100,
+      "User-Agent": USER_AGENT101,
       "Content-Type": "application/json",
       Accept: "application/json"
     }), exports_HttpClientRequest.bodyText(body))).pipe(exports_Effect.timeout(timeout3));
@@ -38696,7 +38755,7 @@ function parseLibreTranslateResults(raw2, query, fromLang, toLang) {
 // src/search/engines/deepl.ts
 var API_URL33 = "https://api-free.deepl.com/v2/translate";
 var WEB_URL3 = "https://www.deepl.com/translator";
-var USER_AGENT101 = "opencode-search/1.0";
+var USER_AGENT102 = "opencode-search/1.0";
 function makeDeepL(config) {
   return {
     name: config.name,
@@ -38765,7 +38824,7 @@ function searchDeepL(http, query, numResults, timeout3) {
         target_lang: targetLang
       }).toString();
       const response = yield* http.execute(exports_HttpClientRequest.post(API_URL33).pipe(exports_HttpClientRequest.setHeaders({
-        "User-Agent": USER_AGENT101,
+        "User-Agent": USER_AGENT102,
         "Content-Type": "application/x-www-form-urlencoded"
       }), exports_HttpClientRequest.bodyText(body))).pipe(exports_Effect.timeout(timeout3));
       if (response.status >= 200 && response.status < 400) {
@@ -38813,7 +38872,7 @@ function parseDeepLApiResults(raw2, query, targetLang) {
 }
 
 // src/search/engines/gitea.ts
-var USER_AGENT102 = "opencode-search/1.0";
+var USER_AGENT103 = "opencode-search/1.0";
 function makeGitea(config, baseUrl2 = "https://gitea.com") {
   return {
     name: config.name,
@@ -38830,7 +38889,7 @@ function searchGitea(http, query, numResults, timeout3, baseUrl2) {
       order: "desc"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${baseUrl2}/api/v1/repos/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT102,
+      "User-Agent": USER_AGENT103,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -38887,7 +38946,7 @@ function parseGiteaResults(raw2, maxResults, baseUrl2) {
 
 // src/search/engines/sourcehut.ts
 var BASE_URL38 = "https://sr.ht/projects";
-var USER_AGENT103 = "opencode-search/1.0 (bot; +https://opencode.ai)";
+var USER_AGENT104 = "opencode-search/1.0 (bot; +https://opencode.ai)";
 function makeSourceHut(config) {
   return {
     name: config.name,
@@ -38902,7 +38961,7 @@ function searchSourceHut(http, query, numResults, timeout3) {
       sort: "recently-updated"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL38}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT103,
+      "User-Agent": USER_AGENT104,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -38973,7 +39032,7 @@ function parseSourceHutResults(html, maxResults) {
 
 // src/search/engines/dictzone.ts
 var BASE_URL39 = "https://dictzone.com";
-var USER_AGENT104 = "opencode-search/1.0";
+var USER_AGENT105 = "opencode-search/1.0";
 var LANG_MAP2 = {
   en: "english",
   de: "german",
@@ -39011,7 +39070,7 @@ function searchDictzone(http, query, numResults, timeout3, fromLang, toLang, lan
     const tl = toLang;
     const url = `${BASE_URL39}/${fl}-${tl}-dictionary/${encodeURIComponent(query)}`;
     const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT104,
+      "User-Agent": USER_AGENT105,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -39059,7 +39118,7 @@ function parseDictzoneResults(html, maxResults, query, fromLang, toLang) {
 
 // src/search/engines/duden.ts
 var BASE_URL40 = "https://www.duden.de";
-var USER_AGENT105 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT106 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeDuden(config) {
   return {
     name: config.name,
@@ -39071,7 +39130,7 @@ function searchDuden(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `${BASE_URL40}/suchen/dudenonline/${encodeURIComponent(query)}`;
     const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT105,
+      "User-Agent": USER_AGENT106,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -39116,7 +39175,7 @@ function parseDudenResults(html, maxResults) {
 
 // src/search/engines/bitchute.ts
 var API_URL34 = "https://api.bitchute.com/api/beta/search/videos";
-var USER_AGENT106 = "opencode-search/1.0";
+var USER_AGENT107 = "opencode-search/1.0";
 function makeBitchute(config) {
   return {
     name: config.name,
@@ -39134,7 +39193,7 @@ function searchBitchute(http, query, numResults, timeout3) {
       sort: "new"
     });
     const response = yield* http.execute(exports_HttpClientRequest.post(API_URL34).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT106,
+      "User-Agent": USER_AGENT107,
       "Content-Type": "application/json"
     }), exports_HttpClientRequest.bodyText(body))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -39189,7 +39248,7 @@ function parseBitchuteResults(raw2, maxResults) {
 
 // src/search/engines/acfun.ts
 var BASE_URL41 = "https://www.acfun.cn";
-var USER_AGENT107 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT108 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeAcfun(config) {
   return {
     name: config.name,
@@ -39204,7 +39263,7 @@ function searchAcfun(http, query, numResults, timeout3) {
       pCursor: "1"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL41}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT107,
+      "User-Agent": USER_AGENT108,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -39276,7 +39335,7 @@ function parseAcfunResults(html, maxResults) {
 
 // src/search/engines/sogou-videos.ts
 var BASE_URL42 = "https://v.sogou.com";
-var USER_AGENT108 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT109 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeSogouVideos(config) {
   return {
     name: config.name,
@@ -39292,7 +39351,7 @@ function searchSogouVideos(http, query, numResults, timeout3) {
       query
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL42}/api/video/shortVideoV2?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT108,
+      "User-Agent": USER_AGENT109,
       Accept: "application/json",
       Referer: `${BASE_URL42}/`
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -39346,7 +39405,7 @@ function parseSogouVideosResults(raw2, maxResults) {
 
 // src/search/engines/sogou-images.ts
 var BASE_URL43 = "https://pic.sogou.com";
-var USER_AGENT109 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT110 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeSogouImages(config) {
   return {
     name: config.name,
@@ -39361,7 +39420,7 @@ function searchSogouImages(http, query, numResults, timeout3) {
       start: "0"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL43}/pics?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT109,
+      "User-Agent": USER_AGENT110,
       Accept: "text/html",
       Referer: `${BASE_URL43}/`
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -39411,7 +39470,7 @@ function parseSogouImagesResults(html, maxResults) {
 
 // src/search/engines/zhihu.ts
 var BASE_URL44 = "https://www.zhihu.com";
-var USER_AGENT110 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT111 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeZhihu(config) {
   return {
     name: config.name,
@@ -39426,7 +39485,7 @@ function searchZhihu(http, query, numResults, timeout3) {
       type: "content"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL44}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT110,
+      "User-Agent": USER_AGENT111,
       Accept: "text/html",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
       Referer: `${BASE_URL44}/`
@@ -39513,7 +39572,7 @@ function makeZhihuResult(title, url, snippet, position) {
 
 // src/search/engines/xiaohongshu.ts
 var BASE_URL45 = "https://www.xiaohongshu.com";
-var USER_AGENT111 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT112 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeXiaohongshu(config) {
   return {
     name: config.name,
@@ -39525,7 +39584,7 @@ function searchXiaohongshu(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `${BASE_URL45}/search_result?keyword=${encodeURIComponent(query)}&source=web_search_result_notes`;
     const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT111,
+      "User-Agent": USER_AGENT112,
       Accept: "text/html",
       "Accept-Language": "zh-CN,zh;q=0.9",
       Referer: `${BASE_URL45}/explore`
@@ -39592,7 +39651,7 @@ function parseXiaohongshuResults(html, maxResults) {
 
 // src/search/engines/emojipedia.ts
 var BASE_URL46 = "https://emojipedia.org";
-var USER_AGENT112 = "opencode-search/1.0";
+var USER_AGENT113 = "opencode-search/1.0";
 function makeEmojipedia(config) {
   return {
     name: config.name,
@@ -39604,7 +39663,7 @@ function searchEmojipedia(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL46}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT112,
+      "User-Agent": USER_AGENT113,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -39649,7 +39708,7 @@ function parseEmojipediaResults(html, maxResults) {
 
 // src/search/engines/cara.ts
 var BASE_URL47 = "https://cara.app";
-var USER_AGENT113 = "opencode-search/1.0";
+var USER_AGENT114 = "opencode-search/1.0";
 function makeCara(config) {
   return {
     name: config.name,
@@ -39666,7 +39725,7 @@ function searchCara(http, query, numResults, timeout3) {
       skip: "0"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL47}/api/search/portfolio-posts?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT113,
+      "User-Agent": USER_AGENT114,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -39727,7 +39786,7 @@ function parseCaraResults(raw2, maxResults) {
 
 // src/search/engines/openclipart.ts
 var BASE_URL48 = "https://openclipart.org";
-var USER_AGENT114 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT115 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeOpenClipArt(config) {
   return {
     name: config.name,
@@ -39742,7 +39801,7 @@ function searchOpenClipArt(http, query, numResults, timeout3) {
       p: "1"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL48}/search/?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT114,
+      "User-Agent": USER_AGENT115,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -39785,7 +39844,7 @@ function parseOpenClipArtResults(html, maxResults) {
 
 // src/search/engines/ipernity.ts
 var BASE_URL49 = "https://www.ipernity.com";
-var USER_AGENT115 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT116 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeIpernity(config) {
   return {
     name: config.name,
@@ -39797,7 +39856,7 @@ function searchIpernity(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `${BASE_URL49}/search/photo/@/page:1:10?q=${encodeURIComponent(query)}`;
     const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT115,
+      "User-Agent": USER_AGENT116,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -39857,7 +39916,7 @@ function parseIpernityResults(html, maxResults) {
 
 // src/search/engines/uxwing.ts
 var BASE_URL50 = "https://uxwing.com";
-var USER_AGENT116 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT117 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeUxwing(config) {
   return {
     name: config.name,
@@ -39869,7 +39928,7 @@ function searchUxwing(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `${BASE_URL50}/?s=${encodeURIComponent(query)}`;
     const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT116,
+      "User-Agent": USER_AGENT117,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -39916,7 +39975,7 @@ function parseUxwingResults(html, maxResults) {
 
 // src/search/engines/flaticon.ts
 var BASE_URL51 = "https://www.flaticon.com";
-var USER_AGENT117 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT118 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeFlaticon(config) {
   return {
     name: config.name,
@@ -39928,7 +39987,7 @@ function searchFlaticon(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ word: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL51}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT117,
+      "User-Agent": USER_AGENT118,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -39991,7 +40050,7 @@ function parseFlaticonResults(html, maxResults) {
 
 // src/search/engines/tagesschau.ts
 var BASE_URL52 = "https://www.tagesschau.de";
-var USER_AGENT118 = "opencode-search/1.0";
+var USER_AGENT119 = "opencode-search/1.0";
 function makeTagesschau(config) {
   return {
     name: config.name,
@@ -40007,7 +40066,7 @@ function searchTagesschau(http, query, numResults, timeout3) {
       resultPage: "0"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL52}/api2u/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT118,
+      "User-Agent": USER_AGENT119,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40055,7 +40114,7 @@ function parseTagesschauResults(raw2, maxResults) {
 
 // src/search/engines/selfhst.ts
 var CDN_URL = "https://cdn.jsdelivr.net/gh/selfhst/icons";
-var USER_AGENT119 = "opencode-search/1.0";
+var USER_AGENT120 = "opencode-search/1.0";
 function makeSelfhst(config) {
   return {
     name: config.name,
@@ -40066,7 +40125,7 @@ function makeSelfhst(config) {
 function searchSelfhst(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${CDN_URL}/index.json`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT119,
+      "User-Agent": USER_AGENT120,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40116,7 +40175,7 @@ function parseSelfhstResults(raw2, query, maxResults) {
 
 // src/search/engines/devicons.ts
 var CDN_URL2 = "https://cdn.jsdelivr.net/gh/devicons/devicon@latest";
-var USER_AGENT120 = "opencode-search/1.0";
+var USER_AGENT121 = "opencode-search/1.0";
 function makeDevicons(config) {
   return {
     name: config.name,
@@ -40127,7 +40186,7 @@ function makeDevicons(config) {
 function searchDevicons(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${CDN_URL2}/devicon.json`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT120,
+      "User-Agent": USER_AGENT121,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40183,7 +40242,7 @@ function parseDeviconsResults(raw2, query, maxResults) {
 
 // src/search/engines/lucide.ts
 var CDN_URL3 = "https://cdn.jsdelivr.net/npm/lucide-static";
-var USER_AGENT121 = "opencode-search/1.0";
+var USER_AGENT122 = "opencode-search/1.0";
 function makeLucide(config) {
   return {
     name: config.name,
@@ -40194,7 +40253,7 @@ function makeLucide(config) {
 function searchLucide(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${CDN_URL3}/tags.json`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT121,
+      "User-Agent": USER_AGENT122,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40239,7 +40298,7 @@ function parseLucideResults(raw2, query, maxResults) {
 // src/search/engines/material-icons.ts
 var SEARCH_URL19 = "https://fonts.google.com/metadata/icons?key=material_symbols&incomplete=true";
 var IMG_URL = "https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsoutlined";
-var USER_AGENT122 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var USER_AGENT123 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeMaterialIcons(config) {
   return {
     name: config.name,
@@ -40250,7 +40309,7 @@ function makeMaterialIcons(config) {
 function searchMaterialIcons(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(SEARCH_URL19).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT122,
+      "User-Agent": USER_AGENT123,
       Accept: "application/json",
       Referer: "https://fonts.google.com/"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -40306,7 +40365,7 @@ function parseMaterialIconsResults(raw2, query, maxResults) {
 
 // src/search/engines/hex.ts
 var API_URL35 = "https://hex.pm/api/packages";
-var USER_AGENT123 = "opencode-search/1.0";
+var USER_AGENT124 = "opencode-search/1.0";
 function makeHex(config) {
   return {
     name: config.name,
@@ -40321,7 +40380,7 @@ function searchHex(http, query, numResults, timeout3) {
       per_page: String(Math.min(numResults, 20))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL35}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT123,
+      "User-Agent": USER_AGENT124,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40368,7 +40427,7 @@ function parseHexResults(raw2, maxResults) {
 
 // src/search/engines/microsoft-learn.ts
 var API_URL36 = "https://learn.microsoft.com/api/search";
-var USER_AGENT124 = "opencode-search/1.0";
+var USER_AGENT125 = "opencode-search/1.0";
 function makeMicrosoftLearn(config) {
   return {
     name: config.name,
@@ -40386,7 +40445,7 @@ function searchMicrosoftLearn(http, query, numResults, timeout3) {
       partnerId: "LearnSite"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL36}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT124,
+      "User-Agent": USER_AGENT125,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40430,7 +40489,7 @@ function parseMicrosoftLearnResults(raw2, maxResults) {
 
 // src/search/engines/ansa.ts
 var BASE_URL53 = "https://www.ansa.it";
-var USER_AGENT125 = "opencode-search/1.0";
+var USER_AGENT126 = "opencode-search/1.0";
 function makeAnsa(config) {
   return {
     name: config.name,
@@ -40442,7 +40501,7 @@ function searchAnsa(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL53}/ricerca?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT125,
+      "User-Agent": USER_AGENT126,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40485,7 +40544,7 @@ function parseAnsaResults(html, maxResults) {
 
 // src/search/engines/senscritique.ts
 var BASE_URL54 = "https://www.senscritique.com";
-var USER_AGENT126 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var USER_AGENT127 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeSensCritique(config) {
   return {
     name: config.name,
@@ -40497,7 +40556,7 @@ function searchSensCritique(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL54}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT126,
+      "User-Agent": USER_AGENT127,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40539,7 +40598,7 @@ function parseSensCritiqueResults(html, maxResults) {
 // src/search/engines/pdbe.ts
 var SOLR_URL = "https://www.ebi.ac.uk/pdbe/search/pdb/select";
 var ENTRY_URL = "https://www.ebi.ac.uk/pdbe/entry/pdb";
-var USER_AGENT127 = "opencode-search/1.0";
+var USER_AGENT128 = "opencode-search/1.0";
 function makePdbe(config) {
   return {
     name: config.name,
@@ -40555,7 +40614,7 @@ function searchPdbe(http, query, numResults, timeout3) {
       rows: String(Math.min(numResults, 20))
     }).toString();
     const response = yield* http.execute(exports_HttpClientRequest.post(SOLR_URL).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT127,
+      "User-Agent": USER_AGENT128,
       "Content-Type": "application/x-www-form-urlencoded"
     }), exports_HttpClientRequest.bodyText(body))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40604,7 +40663,7 @@ function parsePdbeResults(raw2, maxResults) {
 
 // src/search/engines/moviepilot.ts
 var BASE_URL55 = "https://www.moviepilot.de";
-var USER_AGENT128 = "opencode-search/1.0";
+var USER_AGENT129 = "opencode-search/1.0";
 function makeMoviepilot(config) {
   return {
     name: config.name,
@@ -40620,7 +40679,7 @@ function searchMoviepilot(http, query, numResults, timeout3) {
       type: "suggest"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL55}/api/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT128,
+      "User-Agent": USER_AGENT129,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40670,7 +40729,7 @@ var MIRRORS2 = [
   "https://annas-archive.pk",
   "https://annas-archive.gd"
 ];
-var USER_AGENT129 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT130 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeAnnasArchive(config) {
   return {
     name: config.name,
@@ -40692,7 +40751,7 @@ function searchAnnasArchive(http, query, numResults, timeout3) {
 function tryMirror2(http, baseUrl2, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query, page: "1" });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${baseUrl2}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT129, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3 * 0.8));
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${baseUrl2}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT130, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3 * 0.8));
     if (response.status < 200 || response.status >= 400)
       return [];
     const html = yield* response.text.pipe(exports_Effect.catchIf(() => true, () => exports_Effect.succeed("")));
@@ -40731,7 +40790,7 @@ function parseAnnasArchiveResults(html, maxResults, baseUrl2) {
 
 // src/search/engines/iqiyi.ts
 var BASE_URL56 = "https://so.iqiyi.com";
-var USER_AGENT130 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT131 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeIqiyi(config) {
   return {
     name: config.name,
@@ -40743,7 +40802,7 @@ function searchIqiyi(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `${BASE_URL56}/so/q_${encodeURIComponent(query)}`;
     const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT130,
+      "User-Agent": USER_AGENT131,
       Accept: "text/html",
       Referer: `${BASE_URL56}/`
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -40812,7 +40871,7 @@ function parseIqiyiResults(html, maxResults) {
 
 // src/search/engines/adobe-stock.ts
 var BASE_URL57 = "https://stock.adobe.com";
-var USER_AGENT131 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT132 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeAdobeStock(config) {
   return {
     name: config.name,
@@ -40836,7 +40895,7 @@ function searchAdobeStock(http, query, numResults, timeout3) {
       "filters[content_type:image]": "1"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL57}/de/Ajax/Search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT131,
+      "User-Agent": USER_AGENT132,
       Accept: "application/json",
       "Accept-Language": "en-US,en;q=0.5"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -40888,7 +40947,7 @@ function parseAdobeStockResults(raw2, maxResults) {
 
 // src/search/engines/mojeek.ts
 var BASE_URL58 = "https://www.mojeek.com";
-var USER_AGENT132 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT133 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeMojeek(config) {
   return {
     name: config.name,
@@ -40900,7 +40959,7 @@ function searchMojeek(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query, s: "6" });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL58}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT132,
+      "User-Agent": USER_AGENT133,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40942,7 +41001,7 @@ function parseMojeekResults(html, maxResults) {
 // src/search/engines/jisho.ts
 var API_URL37 = "https://jisho.org/api/v1/search/words";
 var BASE_URL59 = "https://jisho.org/word/";
-var USER_AGENT133 = "opencode-search/1.0";
+var USER_AGENT134 = "opencode-search/1.0";
 function makeJisho(config) {
   return {
     name: config.name,
@@ -40954,7 +41013,7 @@ function searchJisho(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ keyword: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL37}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT133,
+      "User-Agent": USER_AGENT134,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41010,7 +41069,7 @@ function parseJishoResults(raw2, maxResults) {
 
 // src/search/engines/radio-browser.ts
 var API_BASE4 = "https://de1.api.radio-browser.info/json/stations";
-var USER_AGENT134 = "opencode-search/1.0";
+var USER_AGENT135 = "opencode-search/1.0";
 function makeRadioBrowser(config) {
   return {
     name: config.name,
@@ -41027,7 +41086,7 @@ function searchRadioBrowser(http, query, numResults, timeout3) {
       limit: String(Math.min(numResults, 30))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_BASE4}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT134,
+      "User-Agent": USER_AGENT135,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41079,7 +41138,7 @@ function parseRadioBrowserResults(raw2, maxResults) {
 
 // src/search/engines/sepiasearch.ts
 var API_URL38 = "https://sepiasearch.org/api/v1/search/videos";
-var USER_AGENT135 = "opencode-search/1.0";
+var USER_AGENT136 = "opencode-search/1.0";
 function makeSepiaSearch(config) {
   return {
     name: config.name,
@@ -41096,7 +41155,7 @@ function searchSepiaSearch(http, query, numResults, timeout3) {
       sort: "-createdAt"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL38}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT135,
+      "User-Agent": USER_AGENT136,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41152,7 +41211,7 @@ function formatDuration4(seconds2) {
 }
 // src/search/engines/repology.ts
 var WEB_URL4 = "https://repology.org/projects";
-var USER_AGENT136 = "opencode-search/1.0";
+var USER_AGENT137 = "opencode-search/1.0";
 function makeRepology(config) {
   return {
     name: config.name,
@@ -41164,7 +41223,7 @@ function searchRepology(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ search: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${WEB_URL4}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT136,
+      "User-Agent": USER_AGENT137,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41212,7 +41271,7 @@ function parseRepologyResults(raw2, query, maxResults) {
 // src/search/engines/artic.ts
 var API_URL39 = "https://api.artic.edu/api/v1/artworks/search";
 var IMAGE_URL = "https://www.artic.edu/iiif/2";
-var USER_AGENT137 = "opencode-search/1.0";
+var USER_AGENT138 = "opencode-search/1.0";
 function makeArtic(config) {
   return {
     name: config.name,
@@ -41227,7 +41286,7 @@ function searchArtic(http, query, numResults, timeout3) {
       limit: String(Math.min(numResults, 20))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL39}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT137,
+      "User-Agent": USER_AGENT138,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41276,7 +41335,7 @@ function parseArticResults(raw2, maxResults) {
 
 // src/search/engines/nvd.ts
 var API_URL40 = "https://nvd.nist.gov/extensions/nudp/services/json/nvd/cve/search/results";
-var USER_AGENT138 = "opencode-search/1.0";
+var USER_AGENT139 = "opencode-search/1.0";
 function makeNvd(config) {
   return {
     name: config.name,
@@ -41293,7 +41352,7 @@ function searchNvd(http, query, numResults, timeout3) {
       offset: "0"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL40}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT138,
+      "User-Agent": USER_AGENT139,
       Accept: "application/json",
       Referer: "https://nvd.nist.gov/vuln/search"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -41347,7 +41406,7 @@ function parseNvdResults(raw2, maxResults) {
 
 // src/search/engines/loc.ts
 var BASE_URL60 = "https://www.loc.gov";
-var USER_AGENT139 = "opencode-search/1.0";
+var USER_AGENT140 = "opencode-search/1.0";
 function makeLoc(config) {
   return {
     name: config.name,
@@ -41359,7 +41418,7 @@ function searchLoc(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query, fo: "json" });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL60}/photos/?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT139,
+      "User-Agent": USER_AGENT140,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41414,7 +41473,7 @@ function parseLocResults(raw2, maxResults) {
 // src/search/engines/1x.ts
 var BASE_URL61 = "https://1x.com";
 var SEARCH_URL20 = "https://1x.com/backend/search.php";
-var USER_AGENT140 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT141 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function make1x(config) {
   return {
     name: config.name,
@@ -41425,7 +41484,7 @@ function make1x(config) {
 function search1x(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL20}?q=${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT140,
+      "User-Agent": USER_AGENT141,
       Accept: "text/html,application/xhtml+xml,application/xml"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41463,7 +41522,7 @@ function parse1xResults(body, maxResults) {
 
 // src/search/engines/tootfinder.ts
 var API_URL41 = "https://www.tootfinder.ch/rest/api/search";
-var USER_AGENT141 = "opencode-search/1.0";
+var USER_AGENT142 = "opencode-search/1.0";
 function makeTootfinder(config) {
   return {
     name: config.name,
@@ -41474,7 +41533,7 @@ function makeTootfinder(config) {
 function searchTootfinder(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL41}/${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT141,
+      "User-Agent": USER_AGENT142,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41531,7 +41590,7 @@ function parseTootfinderResults(raw2, maxResults) {
 
 // src/search/engines/grokipedia.ts
 var API_URL42 = "https://grokipedia.com/api/full-text-search";
-var USER_AGENT142 = "opencode-search/1.0";
+var USER_AGENT143 = "opencode-search/1.0";
 function makeGrokipedia(config) {
   return {
     name: config.name,
@@ -41547,7 +41606,7 @@ function searchGrokipedia(http, query, numResults, timeout3) {
       offset: "0"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL42}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT142,
+      "User-Agent": USER_AGENT143,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41591,7 +41650,7 @@ function parseGrokipediaResults(raw2, maxResults) {
 
 // src/search/engines/findthatmeme.ts
 var API_URL43 = "https://findthatmeme.com/api/v1/search";
-var USER_AGENT143 = "opencode-search/1.0";
+var USER_AGENT144 = "opencode-search/1.0";
 function makeFindThatMeme(config) {
   return {
     name: config.name,
@@ -41603,7 +41662,7 @@ function searchFindThatMeme(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const body = JSON.stringify({ search: query, offset: 0 });
     const response = yield* http.execute(exports_HttpClientRequest.post(API_URL43).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT143,
+      "User-Agent": USER_AGENT144,
       "Content-Type": "application/json",
       Accept: "application/json"
     }), exports_HttpClientRequest.bodyText(body))).pipe(exports_Effect.timeout(timeout3));
@@ -41656,7 +41715,7 @@ function formatBytes(bytes) {
 
 // src/search/engines/apkmirror.ts
 var BASE_URL62 = "https://www.apkmirror.com";
-var USER_AGENT144 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT145 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeApkMirror(config) {
   return {
     name: config.name,
@@ -41672,7 +41731,7 @@ function searchApkMirror(http, query, numResults, timeout3) {
       s: query
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL62}/?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT144,
+      "User-Agent": USER_AGENT145,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41713,7 +41772,7 @@ function parseApkMirrorResults(html, maxResults) {
 
 // src/search/engines/fyyd.ts
 var API_URL44 = "https://api.fyyd.de/0.2/search/podcast";
-var USER_AGENT145 = "opencode-search/1.0";
+var USER_AGENT146 = "opencode-search/1.0";
 function makeFyyd(config) {
   return {
     name: config.name,
@@ -41729,7 +41788,7 @@ function searchFyyd(http, query, numResults, timeout3) {
       page: "0"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL44}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT145,
+      "User-Agent": USER_AGENT146,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41777,7 +41836,7 @@ function parseFyydResults(raw2, maxResults) {
 // src/search/engines/scanr.ts
 var API_URL45 = "https://scanr.enseignementsup-recherche.gouv.fr/api/structures/search";
 var WEB_URL5 = "https://scanr.enseignementsup-recherche.gouv.fr";
-var USER_AGENT146 = "opencode-search/1.0";
+var USER_AGENT147 = "opencode-search/1.0";
 function makeScanr(config) {
   return {
     name: config.name,
@@ -41796,7 +41855,7 @@ function searchScanr(http, query, numResults, timeout3) {
       pageSize: Math.min(numResults, 20)
     });
     const response = yield* http.execute(exports_HttpClientRequest.post(API_URL45).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT146,
+      "User-Agent": USER_AGENT147,
       "Content-Type": "application/json",
       Accept: "application/json"
     }), exports_HttpClientRequest.bodyText(body))).pipe(exports_Effect.timeout(timeout3));
@@ -41841,7 +41900,7 @@ function parseScanrResults(raw2, maxResults) {
 }
 
 // src/search/engines/smzdm.ts
-var USER_AGENT147 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT148 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 var SMZDM_SEARCH_URL = "https://search.smzdm.com";
 var DDG_HTML_URL2 = "https://html.duckduckgo.com/html/";
 function makeSmzdm(config) {
@@ -41871,7 +41930,7 @@ function searchViaDdg(http, query, numResults, timeout3) {
     const scopedQuery = `site:smzdm.com ${query} 优惠`;
     const formData2 = new URLSearchParams({ q: scopedQuery, b: "", kl: "wt-wt" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL2).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT147,
+      "User-Agent": USER_AGENT148,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -41892,7 +41951,7 @@ function searchDirectSmzdm(http, query, numResults, timeout3) {
       s: query
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SMZDM_SEARCH_URL}/cate-home/0/0/0/0/0/0/0/0/0/0_0_0_0_0_0_0_0_0_0/0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0/0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0/0_0_0_?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT147,
+      "User-Agent": USER_AGENT148,
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
       Referer: "https://www.smzdm.com/"
@@ -41988,14 +42047,14 @@ function parseSmzdmDirectResults(html, maxResults) {
 }
 
 // src/search/engines/site-search.ts
-var USER_AGENT148 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT149 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 var DDG_HTML_URL3 = "https://html.duckduckgo.com/html/";
 function searchSiteViaDdg(http, domain, query, suffix, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const scopedQuery = `site:${domain} ${query} ${suffix}`;
     const formData2 = new URLSearchParams({ q: scopedQuery, b: "", kl: "wt-wt" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL3).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT148,
+      "User-Agent": USER_AGENT149,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -42013,7 +42072,7 @@ function searchSiteViaDdgGeneric(http, domain, query, suffix, numResults, timeou
     const genericQuery = `${query} ${suffix}`;
     const formData2 = new URLSearchParams({ q: genericQuery, b: "", kl: "cn-zh" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL3).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT148,
+      "User-Agent": USER_AGENT149,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -42059,7 +42118,7 @@ function searchAltSiteOrder(http, domain, query, suffix, numResults, timeout3) {
     const altQuery = `${query} site:${domain} ${suffix}`;
     const formData2 = new URLSearchParams({ q: altQuery, b: "", kl: "wt-wt" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL3).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT148,
+      "User-Agent": USER_AGENT149,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -42128,7 +42187,7 @@ function searchJd(http, query, numResults, timeout3) {
 }
 
 // src/search/engines/taobao.ts
-var USER_AGENT149 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT150 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 var DDG_HTML_URL4 = "https://html.duckduckgo.com/html/";
 function makeTaobao(config) {
   return {
@@ -42164,7 +42223,7 @@ function searchTaobao(http, query, numResults, timeout3) {
 function fetchDdgHtml(http, formData2, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL4).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT149,
+      "User-Agent": USER_AGENT150,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -42210,7 +42269,7 @@ function parseTaobaoResults(html, maxResults) {
 }
 
 // src/search/engines/pdd.ts
-var USER_AGENT150 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT151 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 var DDG_HTML_URL5 = "https://html.duckduckgo.com/html/";
 function makePdd(config) {
   return {
@@ -42224,7 +42283,7 @@ function searchPdd(http, query, numResults, timeout3) {
     const scopedQuery = `site:pinduoduo.com OR site:yangkeduo.com ${query} 价格`;
     const formData2 = new URLSearchParams({ q: scopedQuery, b: "", kl: "wt-wt" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL5).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT150,
+      "User-Agent": USER_AGENT151,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -42272,7 +42331,7 @@ function parsePddResults(html, maxResults) {
 }
 
 // src/search/engines/amazon-cn.ts
-var USER_AGENT151 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT152 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 var DDG_HTML_URL6 = "https://html.duckduckgo.com/html/";
 function makeAmazonCn(config) {
   return {
@@ -42286,7 +42345,7 @@ function searchAmazonCn(http, query, numResults, timeout3) {
     const scopedQuery = `site:amazon.cn ${query} 价格`;
     const formData2 = new URLSearchParams({ q: scopedQuery, b: "", kl: "wt-wt" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL6).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT151,
+      "User-Agent": USER_AGENT152,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -42360,7 +42419,7 @@ function searchGome(http, query, numResults, timeout3) {
 }
 
 // src/search/engines/amazon-us.ts
-var USER_AGENT152 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT153 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 var DDG_HTML_URL7 = "https://html.duckduckgo.com/html/";
 function makeAmazonUs(config) {
   return {
@@ -42374,7 +42433,7 @@ function searchAmazonUs(http, query, numResults, timeout3) {
     const scopedQuery = `site:amazon.com ${query} -site:amazon.cn -site:amazon.de -site:amazon.co.uk -site:amazon.co.jp -site:amazon.in -site:amazon.it -site:amazon.es -site:amazon.fr -site:amazon.ca -site:amazon.com.au -site:amazon.com.br -site:amazon.com.mx`;
     const formData2 = new URLSearchParams({ q: scopedQuery, b: "", kl: "wt-wt" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL7).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT152,
+      "User-Agent": USER_AGENT153,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8"
@@ -42476,7 +42535,7 @@ function searchKaola(http, query, numResults, timeout3) {
 }
 
 // src/search/engines/bbc-news.ts
-var USER_AGENT153 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var USER_AGENT154 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeBbcNews(config) {
   return {
     name: config.name,
@@ -42487,7 +42546,7 @@ function makeBbcNews(config) {
 function searchBbcNews(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `https://www.bbc.co.uk/search?q=${encodeURIComponent(query)}&d=news`;
-    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT153, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
+    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT154, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
     const html = yield* response.text;
@@ -42603,7 +42662,7 @@ function parseWpResults(raw2, max4) {
 }
 
 // src/search/engines/theverge.ts
-var USER_AGENT154 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var USER_AGENT155 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeTheVerge(config) {
   return {
     name: config.name,
@@ -42614,7 +42673,7 @@ function makeTheVerge(config) {
 function searchTheVerge(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`site:theverge.com ${query}`)}`;
-    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT154, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
+    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT155, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
     const html = yield* response.text;
@@ -42641,7 +42700,7 @@ function parseDdgResults2(html, max4) {
 }
 
 // src/search/engines/arstechnica.ts
-var USER_AGENT155 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var USER_AGENT156 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeArsTechnica(config) {
   return {
     name: config.name,
@@ -42652,7 +42711,7 @@ function makeArsTechnica(config) {
 function searchArs(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`site:arstechnica.com ${query}`)}`;
-    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT155, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
+    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT156, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
     const html = yield* response.text;
@@ -42679,7 +42738,7 @@ function parseDdgResults3(html, max4) {
 }
 
 // src/search/engines/yahoo-finance.ts
-var USER_AGENT156 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var USER_AGENT157 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeYahooFinance(config) {
   return {
     name: config.name,
@@ -42690,7 +42749,7 @@ function makeYahooFinance(config) {
 function searchYF(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=${numResults}&newsCount=0`;
-    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT156, Accept: "application/json" }))).pipe(exports_Effect.timeout(timeout3));
+    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT157, Accept: "application/json" }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
     const raw2 = yield* response.text;
@@ -42846,7 +42905,7 @@ function parseOffResults(raw2, max4) {
 }
 
 // src/search/engines/musicbrainz.ts
-var USER_AGENT157 = "opencode-search/1.0 ( musicbrainz )";
+var USER_AGENT158 = "opencode-search/1.0 ( musicbrainz )";
 function makeMusicBrainz(config) {
   return {
     name: config.name,
@@ -42857,7 +42916,7 @@ function makeMusicBrainz(config) {
 function searchMb(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `https://musicbrainz.org/ws/2/artist/?query=${encodeURIComponent(query)}&limit=${Math.min(numResults, 25)}&fmt=json`;
-    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT157, Accept: "application/json" }))).pipe(exports_Effect.timeout(timeout3));
+    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT158, Accept: "application/json" }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
     const raw2 = yield* response.text;
@@ -43170,6 +43229,13 @@ function selectEngines(flags) {
   const isGeneral = qt === "general";
   const isType = (t) => qt === t;
   const engines = [];
+  engines.push(makeSearxng(makeEngineConfig({
+    name: "searxng",
+    weight: 1.5,
+    timeout: exports_Duration.toMillis(exports_Duration.seconds(25)),
+    maxResults: 60,
+    requiresKey: false
+  })));
   engines.push(makeDuckDuckGo(makeEngineConfig({
     name: "duckduckgo",
     weight: 1,
@@ -44794,7 +44860,7 @@ function selectEngines(flags) {
   engines.push(makeOpenWeather(makeEngineConfig({ name: "openweather", weight: 0.6, timeout: 1e4, maxResults: 1, requiresKey: true })));
   if (isGeneral) {
     const want = new Set(GENERAL_ENGINE_NAMES);
-    const kept = engines.filter((e) => want.has(e.name));
+    const kept = engines.filter((e) => e.name === "searxng" || want.has(e.name));
     const available = new Set(engines.map((e) => e.name));
     const absent = GENERAL_ENGINE_NAMES.filter((n) => !available.has(n));
     if (absent.length > 0) {

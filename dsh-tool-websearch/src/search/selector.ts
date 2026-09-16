@@ -12,6 +12,7 @@ import { makeBing } from "./engines/bing"
 import { makeBingNews } from "./engines/bing-news"
 import { makeBilibili } from "./engines/bilibili"
 import { makeSogouWeChat } from "./engines/sogou-wechat"
+import { makeSearxng } from "./engines/searxng"
 import { makeBaidu } from "./engines/baidu"
 import { makeWikipedia } from "./engines/wikipedia"
 import { makeArxiv } from "./engines/arxiv"
@@ -271,6 +272,26 @@ export function selectEngines(
   const isGeneral = qt === "general";
   const isType = (t: string) => qt === t;
   const engines: SearchEngine[] = []
+
+  /*
+   * SearXNG 本机实例 —— **可选引擎**：部署了就用，没部署就自动降级。
+   *
+   * 为什么无条件加进列表却不担心"没用的人被迫多等"：
+   * 本机端口没有服务时是立刻 ECONNREFUSED（不会等到超时），
+   * 而且 executor 的熔断器会在连续失败后自动跳过它。
+   * 所以对没部署的人，代价接近于零；对部署了的人，收益是召回量翻倍。
+   *
+   * 它也不受下面的通用白名单约束 —— 白名单是用来挡"图片素材/购物/影视"
+   * 这类垂直引擎的，而它本身是聚合器（一次请求带回 google/bing/yandex 等
+   * 多个上游的结果），恰恰是通用召回的主力，所以过滤时要放行。
+   */
+  engines.push(makeSearxng(makeEngineConfig({
+    name: "searxng",
+    weight: 1.5,
+    timeout: Duration.toMillis(Duration.seconds(25)),
+    maxResults: 60,
+    requiresKey: false,
+  })))
 
   // DuckDuckGo 始终可用（免费、零配置）
   engines.push(makeDuckDuckGo(makeEngineConfig({
@@ -2232,7 +2253,8 @@ export function selectEngines(
    */
   if (isGeneral) {
     const want = new Set(GENERAL_ENGINE_NAMES)
-    const kept = engines.filter((e) => want.has(e.name))
+    // searxng 是聚合器、不是垂直引擎 —— 不受白名单约束（见它上面那段说明）
+    const kept = engines.filter((e) => e.name === "searxng" || want.has(e.name))
     // 名单里写了但 selector 里并不存在的名字（拼错、或引擎被删）：
     // 这会**静默地少召回一整个引擎**，属于必须能看见的配置错误
     const available = new Set(engines.map((e) => e.name))
