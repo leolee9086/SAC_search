@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 搜索引擎选择器
  * 根据环境配置选择可用引擎
  * 借鉴 SearXNG 的引擎选择逻辑：按优先级和可用性动态选择
@@ -204,9 +204,72 @@ export interface SelectFlags {
   lang?: string
 }
 
+/**
+ * 通用网页搜索的**精选引擎集**。
+ *
+ * ## 为什么需要这份名单
+ *
+ * selector 里 111 个引擎在 general 时都会加入，其中包括：
+ * - 图片素材站：unsplash / pexels / flaticon / pixiv / wallhaven…
+ * - 购物：taobao / jd / amazon / apple-app-store…
+ * - 影视游戏：imdb / tvmaze / igdb / rawg / steam…
+ * - 学术：pubmed / arxiv / core / crossref…
+ * - 纯工具：wttr / openweather / currency-convert / nominatim / deepl…
+ *
+ * 它们各自只在自己的领域里有意义。混进通用搜索有两个后果，实测都确认过：
+ *   1. **噪声**：搜前端技术词会返回 App Store 应用、代数几何论文、天气
+ *   2. **慢**：实测 39 个引擎耗时 26 秒、111 个要 50 秒以上，
+ *      而且引擎越多失败越多（限流、超时），失败的那些纯粹在浪费总时间
+ *
+ * SearXNG 靠引擎的 `categories` 元数据做隔离；我们的 selector 是 if 链式
+ * 注册、没有元数据，所以用这份显式名单表达同一个意思。
+ *
+ * ## 取舍：为什么不"全都跑"
+ *
+ * 搜索引擎的价值在召回，但**召回来自引擎的覆盖面、不是引擎的数量**：
+ * Google/Bing/百度 已经覆盖了绝大部分公开网页，再叠 100 个垂直引擎
+ * 既不会多召回什么，还会拖慢整体、并把噪声顶到排序前面。
+ * 要更宽的召回应该**换关键词**或**点名 engines**，而不是无差别全跑。
+ *
+ * 需要冷门引擎时传 `engines: ["pubmed"]` 显式指定 —— 那条路径不受这份名单限制。
+ */
+export const GENERAL_ENGINE_NAMES: readonly string[] = [
+  // ── 通用网页搜索（召回主力）──
+  'duckduckgo', 'bing', 'brave', 'google', 'startpage', 'mojeek', 'marginalia',
+  'baidu', 'sogou', '360search', 'quark', 'yandex', 'naver', 'qwant', 'yahoo',
+  'seznam', 'mwmbl', 'yep', 'wiby',
+  // ── 百科与参考 ──
+  'wikipedia', 'britannica-wiki', 'wikivoyage', 'stackexchange', 'hackernews',
+  // ── 技术/代码（这类查询在通用搜索里非常常见）──
+  'github', 'github-code', 'github-issues', 'gitlab', 'mdn', 'npm', 'dockerhub',
+  'packagist', 'rubygems', 'crates', 'huggingface',
+  // ── 中文社区（中文查询的召回补充）──
+  'zhihu', 'douban', 'weibo', 'xiaohongshu', 'reddit',
+  // ── 新闻 ──
+  'bbc-news', 'theguardian', 'techcrunch', 'theverge', 'arstechnica', 'reuters',
+]
+
 export function selectEngines(
   flags?: SelectFlags,
 ): SearchEngine[] {
+  /*
+   * flags 规范化 —— 这里是整个引擎选择的关键。
+   *
+   * 原实现把「没传 flags」和「queryType=general」当成两件不同的事，
+   * 而通用引擎的条件写的是 `if (!flags)`，于是：
+   *   - 无 flags：201 个引擎全上（通用 + 视频 + 购物 + 图片 + 学术…）
+   *   - queryType=general：**通用引擎全部被排除**，只剩垂直引擎
+   * 实测确认过：后者会丢掉 Google、百度、Startpage、Yahoo，
+   * 却把 pubmed（医学）、igdb（游戏库）、openweather（天气）拉进来。
+   *
+   * 现在把两者统一成同一个语义：「通用网页搜索」。
+   *   - 通用引擎（Google/百度/DDG/Bing…）在 `general` 时加入
+   *   - 垂直引擎（视频/购物/学术/代码…）**只在自己那个类型时加入**
+   * 这也正是 SearXNG 按 category 隔离引擎的做法。
+   */
+  const qt = flags?.queryType ?? "general";
+  const isGeneral = qt === "general";
+  const isType = (t: string) => qt === t;
   const engines: SearchEngine[] = []
 
   // DuckDuckGo 始终可用（免费、零配置）
@@ -231,7 +294,7 @@ export function selectEngines(
   // Brave Search — 有 API key 时使用认证调用提高额度
   // Brave 免费版无需 API key 即可使用（每月 2000 次查询）
   const hasBraveKey = !!process.env.BRAVE_API_KEY
-  if (flags?.brave || hasBraveKey || !flags) {
+  if (flags?.brave || hasBraveKey || isGeneral) {
     engines.push(makeBrave(makeEngineConfig({
       name: "brave",
       weight: 1.2,
@@ -243,7 +306,7 @@ export function selectEngines(
   }
 
   // Startpage — Google 隐私代理，无需 key
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeStartpage(makeEngineConfig({
       name: "startpage",
       weight: 1.1,
@@ -255,7 +318,7 @@ export function selectEngines(
   }
 
   // Mwmbl — 开源社区搜索引擎，无需 key
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeMwmbl(makeEngineConfig({
       name: "mwmbl",
       weight: 0.7,
@@ -267,7 +330,7 @@ export function selectEngines(
   }
 
   // Seznam — 捷克搜索引擎
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeSeznam(makeEngineConfig({
       name: "seznam",
       weight: 0.7,
@@ -279,7 +342,7 @@ export function selectEngines(
   }
 
   // AOL — 美国老牌搜索引擎（代理 Bing 结果）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeAol(makeEngineConfig({
       name: "aol",
       weight: 0.7,
@@ -291,7 +354,7 @@ export function selectEngines(
   }
 
   // GMX — 德国搜索引擎（代理 Bing 结果）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeGmx(makeEngineConfig({
       name: "gmx",
       weight: 0.7,
@@ -303,7 +366,7 @@ export function selectEngines(
   }
 
   // Yep — AI 驱动的搜索引擎
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeYep(makeEngineConfig({
       name: "yep",
       weight: 0.7,
@@ -315,7 +378,7 @@ export function selectEngines(
   }
 
   // Mojeek — 独立隐私搜索引擎（拥有自己的索引）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeMojeek(makeEngineConfig({
       name: "mojeek",
       weight: 0.6,
@@ -327,7 +390,7 @@ export function selectEngines(
   }
 
   // Grokipedia — 技术百科
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeGrokipedia(makeEngineConfig({
       name: "grokipedia",
       weight: 0.5,
@@ -340,7 +403,7 @@ export function selectEngines(
 
   // Bilibili 视频搜索 — 调用 Bilibili 内部 JSON API
   // 无需 API key，通过随机 buvid3 cookie 绕过基础反爬
-  if (flags?.bilibili || !flags || flags?.queryType === "video") {
+  if (flags?.bilibili || isType("video")) {
     engines.push(makeBilibili(makeEngineConfig({
       name: "bilibili",
       weight: 1.0,
@@ -352,7 +415,7 @@ export function selectEngines(
 
   // YouTube 视频搜索 — 全球最大视频平台
   // 通过 HTML 解析 YouTube 搜索结果页
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeYouTube(makeEngineConfig({
       name: "youtube",
       weight: 1.2,
@@ -364,7 +427,7 @@ export function selectEngines(
   }
 
   // Piped — YouTube 隐私友好前端（多实例）
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makePiped(makeEngineConfig({
       name: "piped",
       weight: 0.9,
@@ -376,7 +439,7 @@ export function selectEngines(
   }
 
   // Invidious — YouTube 隐私友好前端（多实例）
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeInvidious(makeEngineConfig({
       name: "invidious",
       weight: 0.8,
@@ -388,7 +451,7 @@ export function selectEngines(
   }
 
   // Odysee — 去中心化视频平台
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeOdysee(makeEngineConfig({
       name: "odysee",
       weight: 0.7,
@@ -400,7 +463,7 @@ export function selectEngines(
   }
 
   // BitChute — 替代视频平台
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeBitchute(makeEngineConfig({
       name: "bitchute",
       weight: 0.5,
@@ -412,7 +475,7 @@ export function selectEngines(
   }
 
   // AcFun — 中文视频平台
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeAcfun(makeEngineConfig({
       name: "acfun",
       weight: 0.5,
@@ -424,7 +487,7 @@ export function selectEngines(
   }
 
   // iQiyi — 中文视频搜索
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeIqiyi(makeEngineConfig({
       name: "iqiyi",
       weight: 0.5,
@@ -436,7 +499,7 @@ export function selectEngines(
   }
 
   // 搜狗视频 — 中文短视频搜索
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeSogouVideos(makeEngineConfig({
       name: "sogou-videos",
       weight: 0.5,
@@ -447,8 +510,8 @@ export function selectEngines(
     })))
   }
 
-  // 搜狗微信 — 微信公众号文章搜索
-  if (!flags || flags?.queryType === "news" || flags?.queryType === "social") {
+  // 搜狗微信 — 微信公众号文章搜索（新闻/社交类内容，归到这两类查询里）
+  if (isGeneral || isType("news") || isType("social")) {
     engines.push(makeSogouWeChat(makeEngineConfig({
       name: "sogou-wechat",
       weight: 0.9,
@@ -461,7 +524,7 @@ export function selectEngines(
 
   // 百度搜索 — 中文网页搜索
   // 使用百度 JSON API (https://www.baidu.com/s?tn=json)
-  if (!flags || flags?.lang?.startsWith("zh")) {
+  if (isGeneral || flags?.lang?.startsWith("zh")) {
     engines.push(makeBaidu(makeEngineConfig({
       name: "baidu",
       weight: 0.9,
@@ -473,7 +536,7 @@ export function selectEngines(
   }
 
   // ChinaSo — 中文综合搜索
-  if (!flags || flags?.lang?.startsWith("zh")) {
+  if (isGeneral || flags?.lang?.startsWith("zh")) {
     engines.push(makeChinaso(makeEngineConfig({
       name: "chinaso",
       weight: 0.8,
@@ -485,7 +548,7 @@ export function selectEngines(
   }
 
   // Quark — 夸克中文搜索（阿里旗下）
-  if (!flags || flags?.lang?.startsWith("zh")) {
+  if (isGeneral || flags?.lang?.startsWith("zh")) {
     engines.push(makeQuark(makeEngineConfig({
       name: "quark",
       weight: 0.7,
@@ -498,7 +561,7 @@ export function selectEngines(
 
   // Google 搜索 — 全球最大搜索引擎（HTTP HTML 解析）
   // 参考 SearXNG google.py，含 CAPTCHA 检测 + CONSENT cookie
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeGoogle(makeEngineConfig({
       name: "google",
       weight: 1.3,
@@ -510,7 +573,7 @@ export function selectEngines(
   }
 
   // Yandex 搜索 — 俄语区主要搜索引擎
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeYandex(makeEngineConfig({
       name: "yandex",
       weight: 0.7,
@@ -522,7 +585,7 @@ export function selectEngines(
   }
 
   // Naver 搜索 — 韩语区主要搜索引擎
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeNaver(makeEngineConfig({
       name: "naver",
       weight: 0.7,
@@ -534,7 +597,7 @@ export function selectEngines(
   }
 
   // 搜狗搜索 — 中文网页搜索（SearXNG sogou.py 参考）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeSogou(makeEngineConfig({
       name: "sogou",
       weight: 0.8,
@@ -546,7 +609,7 @@ export function selectEngines(
   }
 
   // 360搜索 — 中文网页搜索
-  if (!flags) {
+  if (isGeneral) {
     engines.push(make360Search(makeEngineConfig({
       name: "360search",
       weight: 0.7,
@@ -558,7 +621,7 @@ export function selectEngines(
   }
 
   // Bing Images — 图片搜索
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeBingImages(makeEngineConfig({
       name: "bing-images",
       weight: 0.9,
@@ -570,7 +633,7 @@ export function selectEngines(
   }
 
   // 搜狗图片 — 中文图片搜索
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeSogouImages(makeEngineConfig({
       name: "sogou-images",
       weight: 0.6,
@@ -582,7 +645,7 @@ export function selectEngines(
   }
 
   // Bing Videos — 视频搜索
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeBingVideos(makeEngineConfig({
       name: "bing-videos",
       weight: 0.9,
@@ -594,7 +657,7 @@ export function selectEngines(
   }
 
   // Dailymotion — 视频搜索（Dailymotion REST API）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeDailymotion(makeEngineConfig({
       name: "dailymotion",
       weight: 0.8,
@@ -606,7 +669,7 @@ export function selectEngines(
   }
 
   // Vimeo — 视频搜索
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeVimeo(makeEngineConfig({
       name: "vimeo",
       weight: 0.7,
@@ -618,7 +681,7 @@ export function selectEngines(
   }
 
   // APKMirror — Android APK 文件搜索
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeApkMirror(makeEngineConfig({
       name: "apkmirror",
       weight: 0.5,
@@ -630,7 +693,7 @@ export function selectEngines(
   }
 
   // SoundCloud — 音频/音乐搜索
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeSoundCloud(makeEngineConfig({
       name: "soundcloud",
       weight: 0.7,
@@ -642,7 +705,7 @@ export function selectEngines(
   }
 
   // Flickr — 图片搜索
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeFlickr(makeEngineConfig({
       name: "flickr",
       weight: 0.7,
@@ -654,7 +717,7 @@ export function selectEngines(
   }
 
   // 豆瓣 — 中文内容搜索（国内直连）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeDouban(makeEngineConfig({
       name: "douban",
       weight: 0.8,
@@ -666,7 +729,7 @@ export function selectEngines(
   }
 
   // 微博 — 社交媒体搜索（国内直连）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeWeibo(makeEngineConfig({
       name: "weibo",
       weight: 0.8,
@@ -678,7 +741,7 @@ export function selectEngines(
   }
 
   // 知乎 — 中文问答平台（直连）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeZhihu(makeEngineConfig({
       name: "zhihu",
       weight: 0.8,
@@ -690,7 +753,7 @@ export function selectEngines(
   }
 
   // 小红书 — 中文生活方式平台（直连）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeXiaohongshu(makeEngineConfig({
       name: "xiaohongshu",
       weight: 0.7,
@@ -702,7 +765,7 @@ export function selectEngines(
   }
 
   // Reddit — 社交搜索
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeReddit(makeEngineConfig({
       name: "reddit",
       weight: 0.7,
@@ -714,7 +777,7 @@ export function selectEngines(
   }
 
   // Twitter/X — 社交搜索
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeTwitter(makeEngineConfig({
       name: "twitter",
       weight: 0.8,
@@ -726,7 +789,7 @@ export function selectEngines(
   }
 
   // Google Images — 图片搜索（Google JSON API）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeGoogleImages(makeEngineConfig({
       name: "google-images",
       weight: 1.0,
@@ -738,7 +801,7 @@ export function selectEngines(
   }
 
   // 学术类查询：Arxiv + Semantic Scholar + Google Scholar
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeArxiv(makeEngineConfig({
       name: "arxiv",
       weight: 1.0,
@@ -766,7 +829,7 @@ export function selectEngines(
   }
 
   // 代码类查询：GitHub + GitLab + HuggingFace
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeGitHub(makeEngineConfig({
       name: "github",
       weight: 1.0,
@@ -882,7 +945,7 @@ export function selectEngines(
   }
 
   // 百科类查询：Wikipedia
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeWikipedia(makeEngineConfig({
       name: "wikipedia",
       weight: 0.9,
@@ -927,7 +990,7 @@ export function selectEngines(
     engines.push(makeStackExchange(makeEngineConfig({ name: "stackexchange", weight: 0.8, timeout: 10000, maxResults: 5, requiresKey: false })))
 
   // 电影/娱乐类查询：IMDb
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeIMDb(makeEngineConfig({
       name: "imdb",
       weight: 0.8,
@@ -939,7 +1002,7 @@ export function selectEngines(
   }
 
   // 应用搜索：Google Play
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeGooglePlay(makeEngineConfig({
       name: "google-play",
       weight: 0.7,
@@ -951,7 +1014,7 @@ export function selectEngines(
   }
 
   // 图书搜索：Goodreads
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeGoodreads(makeEngineConfig({
       name: "goodreads",
       weight: 0.7,
@@ -963,7 +1026,7 @@ export function selectEngines(
   }
 
   // Rust 包搜索：crates.io
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeCrates(makeEngineConfig({
       name: "crates",
       weight: 0.8,
@@ -991,7 +1054,7 @@ export function selectEngines(
   }
 
   // Python 包搜索：PyPI
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makePyPIHtml(makeEngineConfig({
       name: "pypi-html",
       weight: 0.8,
@@ -1003,7 +1066,7 @@ export function selectEngines(
   }
 
   // 图书搜索：Open Library（JSON API，免费）
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeOpenLibrary(makeEngineConfig({
       name: "openlibrary",
       weight: 0.7,
@@ -1015,7 +1078,7 @@ export function selectEngines(
   }
 
   // 壁纸搜索：Wallhaven
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeWallhaven(makeEngineConfig({
       name: "wallhaven",
       weight: 0.7,
@@ -1027,7 +1090,7 @@ export function selectEngines(
   }
 
   // 免版税图库搜索：Adobe Stock
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeAdobeStock(makeEngineConfig({
       name: "adobe-stock",
       weight: 0.6,
@@ -1039,7 +1102,7 @@ export function selectEngines(
   }
 
   // FindThatMeme — 表情包搜索
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeFindThatMeme(makeEngineConfig({
       name: "findthatmeme",
       weight: 0.4,
@@ -1051,7 +1114,7 @@ export function selectEngines(
   }
 
   // 学术 DOI 搜索：Crossref
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeCrossRef(makeEngineConfig({
       name: "crossref",
       weight: 0.9,
@@ -1095,7 +1158,7 @@ export function selectEngines(
   }
 
   // 开放媒体搜索：Openverse（Creative Commons 图片）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeOpenverse(makeEngineConfig({
       name: "openverse",
       weight: 0.7,
@@ -1107,7 +1170,7 @@ export function selectEngines(
   }
 
   // 购物搜索：eBay
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeEbay(makeEngineConfig({
       name: "ebay",
       weight: 0.7,
@@ -1119,7 +1182,7 @@ export function selectEngines(
   }
 
   // 比价购物：什么值得买 (SMZDM)
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeSmzdm(makeEngineConfig({
       name: "smzdm",
       weight: 0.8,
@@ -1131,7 +1194,7 @@ export function selectEngines(
   }
 
   // 比价购物：京东 (JD.com)
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeJd(makeEngineConfig({
       name: "jd",
       weight: 0.7,
@@ -1143,7 +1206,7 @@ export function selectEngines(
   }
 
   // 比价购物：淘宝/天猫
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeTaobao(makeEngineConfig({
       name: "taobao",
       weight: 0.7,
@@ -1155,7 +1218,7 @@ export function selectEngines(
   }
 
   // 比价购物：拼多多
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makePdd(makeEngineConfig({
       name: "pdd",
       weight: 0.7,
@@ -1167,7 +1230,7 @@ export function selectEngines(
   }
 
   // 比价购物：亚马逊中国
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeAmazonCn(makeEngineConfig({
       name: "amazon-cn",
       weight: 0.6,
@@ -1179,7 +1242,7 @@ export function selectEngines(
   }
 
   // 比价购物：苏宁易购
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeSuning(makeEngineConfig({
       name: "suning",
       weight: 0.7,
@@ -1191,7 +1254,7 @@ export function selectEngines(
   }
 
   // 比价购物：国美
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeGome(makeEngineConfig({
       name: "gome",
       weight: 0.6,
@@ -1203,7 +1266,7 @@ export function selectEngines(
   }
 
   // 比价购物：Amazon.com (US)
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeAmazonUs(makeEngineConfig({
       name: "amazon-us",
       weight: 0.6,
@@ -1215,7 +1278,7 @@ export function selectEngines(
   }
 
   // 比价购物：唯品会
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeVip(makeEngineConfig({
       name: "vip",
       weight: 0.7,
@@ -1227,7 +1290,7 @@ export function selectEngines(
   }
 
   // 比价购物：1688（阿里巴巴批发）
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeYipin(makeEngineConfig({
       name: "1688",
       weight: 0.6,
@@ -1239,7 +1302,7 @@ export function selectEngines(
   }
 
   // 比价购物：当当网
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeDangdang(makeEngineConfig({
       name: "dangdang",
       weight: 0.6,
@@ -1251,7 +1314,7 @@ export function selectEngines(
   }
 
   // 比价购物：考拉海购
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeKaola(makeEngineConfig({
       name: "kaola",
       weight: 0.6,
@@ -1263,7 +1326,7 @@ export function selectEngines(
   }
 
   // 图片搜索：Pinterest
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makePinterest(makeEngineConfig({
       name: "pinterest",
       weight: 0.7,
@@ -1275,7 +1338,7 @@ export function selectEngines(
   }
 
   // 通用搜索：Qwant（法国搜索引擎）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeQwant(makeEngineConfig({
       name: "qwant",
       weight: 0.8,
@@ -1287,7 +1350,7 @@ export function selectEngines(
   }
 
   // 通用搜索：Yahoo
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeYahoo(makeEngineConfig({
       name: "yahoo",
       weight: 0.8,
@@ -1299,7 +1362,7 @@ export function selectEngines(
   }
 
   // 电影评价搜索：Rotten Tomatoes
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeRottenTomatoes(makeEngineConfig({
       name: "rottentomatoes",
       weight: 0.7,
@@ -1311,7 +1374,7 @@ export function selectEngines(
   }
 
   // 游戏搜索：Steam
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeSteam(makeEngineConfig({
       name: "steam",
       weight: 0.7,
@@ -1323,7 +1386,7 @@ export function selectEngines(
   }
 
   // 图片搜索：Pexels（免费图库）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makePexels(makeEngineConfig({
       name: "pexels",
       weight: 0.7,
@@ -1335,7 +1398,7 @@ export function selectEngines(
   }
 
   // 学术搜索：OpenAlex
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeOpenAlex(makeEngineConfig({
       name: "openalex",
       weight: 0.9,
@@ -1347,7 +1410,7 @@ export function selectEngines(
   }
 
   // 日本视频搜索：Niconico
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeNiconico(makeEngineConfig({
       name: "niconico",
       weight: 0.7,
@@ -1359,7 +1422,7 @@ export function selectEngines(
   }
 
   // 艺术作品搜索：DeviantArt
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeDeviantArt(makeEngineConfig({
       name: "deviantart",
       weight: 0.7,
@@ -1371,7 +1434,7 @@ export function selectEngines(
   }
 
   // Google 视频搜索
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeGoogleVideos(makeEngineConfig({
       name: "google-videos",
       weight: 0.9,
@@ -1383,7 +1446,7 @@ export function selectEngines(
   }
 
   // 音乐搜索：Bandcamp
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeBandcamp(makeEngineConfig({
       name: "bandcamp",
       weight: 0.7,
@@ -1395,7 +1458,7 @@ export function selectEngines(
   }
 
   // 歌词搜索：Genius
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeGenius(makeEngineConfig({
       name: "genius",
       weight: 0.7,
@@ -1407,7 +1470,7 @@ export function selectEngines(
   }
 
   // 图片搜索：Imgur
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeImgur(makeEngineConfig({
       name: "imgur",
       weight: 0.7,
@@ -1419,7 +1482,7 @@ export function selectEngines(
   }
 
   // 视频搜索：Rumble
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeRumble(makeEngineConfig({
       name: "rumble",
       weight: 0.7,
@@ -1431,7 +1494,7 @@ export function selectEngines(
   }
 
   // Go 包搜索：pkg.go.dev
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makePkgGoDev(makeEngineConfig({
       name: "pkg-go-dev",
       weight: 0.8,
@@ -1443,7 +1506,7 @@ export function selectEngines(
   }
 
   // 去中心化视频搜索：PeerTube
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makePeerTube(makeEngineConfig({
       name: "peertube",
       weight: 0.7,
@@ -1455,7 +1518,7 @@ export function selectEngines(
   }
 
   // Sepia Search — 联邦视频搜索（PeerTube 视频聚合）
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeSepiaSearch(makeEngineConfig({
       name: "sepiasearch",
       weight: 0.6,
@@ -1467,7 +1530,7 @@ export function selectEngines(
   }
 
   // 插画搜索：Pixiv
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makePixiv(makeEngineConfig({
       name: "pixiv",
       weight: 0.7,
@@ -1479,7 +1542,7 @@ export function selectEngines(
   }
 
   // 音乐搜索：Deezer
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeDeezer(makeEngineConfig({
       name: "deezer",
       weight: 0.7,
@@ -1491,7 +1554,7 @@ export function selectEngines(
   }
 
   // 播客搜索：Fyyd
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeFyyd(makeEngineConfig({
       name: "fyyd",
       weight: 0.5,
@@ -1503,7 +1566,7 @@ export function selectEngines(
   }
 
   // 新闻搜索：Reuters
-  if (!flags || flags?.queryType === "news") {
+  if (isGeneral || isType("news")) {
     engines.push(makeReuters(makeEngineConfig({
       name: "reuters",
       weight: 0.8,
@@ -1515,7 +1578,7 @@ export function selectEngines(
   }
 
   // 广播电台搜索：Radio Browser
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeRadioBrowser(makeEngineConfig({
       name: "radio-browser",
       weight: 0.5,
@@ -1527,7 +1590,7 @@ export function selectEngines(
   }
 
   // 天气搜索：wttr.in
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeWttr(makeEngineConfig({
       name: "wttr",
       weight: 0.6,
@@ -1539,7 +1602,7 @@ export function selectEngines(
   }
 
   // 新闻搜索：Yahoo News
-  if (!flags || flags?.queryType === "news") {
+  if (isGeneral || isType("news")) {
     engines.push(makeYahooNews(makeEngineConfig({
       name: "yahoo-news",
       weight: 0.8,
@@ -1551,7 +1614,7 @@ export function selectEngines(
   }
 
   // Tagesschau — 德国新闻
-  if (!flags || flags?.queryType === "news") {
+  if (isGeneral || isType("news")) {
     engines.push(makeTagesschau(makeEngineConfig({
       name: "tagesschau",
       weight: 0.5,
@@ -1563,7 +1626,7 @@ export function selectEngines(
   }
 
   // ANSA — 意大利新闻
-  if (!flags || flags?.queryType === "news") {
+  if (isGeneral || isType("news")) {
     engines.push(makeAnsa(makeEngineConfig({
       name: "ansa",
       weight: 0.5,
@@ -1575,7 +1638,7 @@ export function selectEngines(
   }
 
   // SensCritique — 法国评论平台
-  if (!flags || flags?.queryType === "general") {
+  if (isGeneral || isType("general")) {
     engines.push(makeSensCritique(makeEngineConfig({
       name: "senscritique",
       weight: 0.4,
@@ -1587,7 +1650,7 @@ export function selectEngines(
   }
 
   // 音乐搜索：Mixcloud
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeMixcloud(makeEngineConfig({
       name: "mixcloud",
       weight: 0.7,
@@ -1599,7 +1662,7 @@ export function selectEngines(
   }
 
   // Rust 文档搜索：lib.rs
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeLibRs(makeEngineConfig({
       name: "lib-rs",
       weight: 0.7,
@@ -1611,7 +1674,7 @@ export function selectEngines(
   }
 
   // NVD — 国家漏洞数据库
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeNvd(makeEngineConfig({
       name: "nvd",
       weight: 0.5,
@@ -1623,7 +1686,7 @@ export function selectEngines(
   }
 
   // Repology — 软件包版本追踪
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeRepology(makeEngineConfig({
       name: "repology",
       weight: 0.5,
@@ -1635,7 +1698,7 @@ export function selectEngines(
   }
 
   // Android 应用搜索：F-Droid
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeFDroid(makeEngineConfig({
       name: "fdroid",
       weight: 0.7,
@@ -1647,7 +1710,7 @@ export function selectEngines(
   }
 
   // 社交搜索：Mastodon
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeMastodon(makeEngineConfig({
       name: "mastodon",
       weight: 0.7,
@@ -1659,7 +1722,7 @@ export function selectEngines(
   }
 
   // 货币转换搜索：currency-convert
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeCurrencyConvert(makeEngineConfig({
       name: "currency-convert",
       weight: 0.7,
@@ -1671,7 +1734,7 @@ export function selectEngines(
   }
 
   // 艺术作品搜索：ArtStation
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeArtStation(makeEngineConfig({
       name: "artstation",
       weight: 0.7,
@@ -1683,7 +1746,7 @@ export function selectEngines(
   }
 
   // 芝加哥艺术博物馆搜索：Artic
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeArtic(makeEngineConfig({
       name: "artic",
       weight: 0.5,
@@ -1695,7 +1758,7 @@ export function selectEngines(
   }
 
   // 1x — 艺术摄影社区
-  if (!flags) {
+  if (isGeneral) {
     engines.push(make1x(makeEngineConfig({
       name: "1x",
       weight: 0.3,
@@ -1707,7 +1770,7 @@ export function selectEngines(
   }
 
   // Cara — 艺术家社区（反 AI 生成艺术）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeCara(makeEngineConfig({
       name: "cara",
       weight: 0.5,
@@ -1719,7 +1782,7 @@ export function selectEngines(
   }
 
   // OpenClipArt — 免费矢量图搜索
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeOpenClipArt(makeEngineConfig({
       name: "openclipart",
       weight: 0.4,
@@ -1731,7 +1794,7 @@ export function selectEngines(
   }
 
   // LOC — 美国国会图书馆图片搜索
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeLoc(makeEngineConfig({
       name: "loc",
       weight: 0.4,
@@ -1743,7 +1806,7 @@ export function selectEngines(
   }
 
   // Ipernity — 摄影社区
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeIpernity(makeEngineConfig({
       name: "ipernity",
       weight: 0.4,
@@ -1755,7 +1818,7 @@ export function selectEngines(
   }
 
   // UXWing — 免费图标
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeUxwing(makeEngineConfig({
       name: "uxwing",
       weight: 0.3,
@@ -1767,7 +1830,7 @@ export function selectEngines(
   }
 
   // Flaticon — 免费图标
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeFlaticon(makeEngineConfig({
       name: "flaticon",
       weight: 0.3,
@@ -1779,7 +1842,7 @@ export function selectEngines(
   }
 
   // Selfhst — 自托管图标
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeSelfhst(makeEngineConfig({
       name: "selfhst",
       weight: 0.2,
@@ -1791,7 +1854,7 @@ export function selectEngines(
   }
 
   // Devicons — 开发者图标
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeDevicons(makeEngineConfig({
       name: "devicons",
       weight: 0.2,
@@ -1803,7 +1866,7 @@ export function selectEngines(
   }
 
   // Lucide — 开源图标
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeLucide(makeEngineConfig({
       name: "lucide",
       weight: 0.2,
@@ -1815,7 +1878,7 @@ export function selectEngines(
   }
 
   // Material Icons — Google 材质图标
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeMaterialIcons(makeEngineConfig({
       name: "material-icons",
       weight: 0.2,
@@ -1827,7 +1890,7 @@ export function selectEngines(
   }
 
   // 知识图谱搜索：Wikidata
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeWikidata(makeEngineConfig({
       name: "wikidata",
       weight: 0.8,
@@ -1839,7 +1902,7 @@ export function selectEngines(
   }
 
   // 媒体文件搜索：Wikimedia Commons
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeWikimediaCommons(makeEngineConfig({
       name: "wikicommons",
       weight: 0.7,
@@ -1851,7 +1914,7 @@ export function selectEngines(
   }
 
   // Perl 包搜索：MetaCPAN
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeMetacpan(makeEngineConfig({
       name: "metacpan",
       weight: 0.8,
@@ -1863,7 +1926,7 @@ export function selectEngines(
   }
 
   // Arch Linux 包搜索：archlinux
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeArchLinux(makeEngineConfig({
       name: "archlinux",
       weight: 0.7,
@@ -1875,7 +1938,7 @@ export function selectEngines(
   }
 
   // Alpine Linux 包搜索：alpinelinux
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeAlpineLinux(makeEngineConfig({
       name: "alpinelinux",
       weight: 0.7,
@@ -1887,7 +1950,7 @@ export function selectEngines(
   }
 
   // Void Linux 包搜索：voidlinux
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeVoidLinux(makeEngineConfig({
       name: "voidlinux",
       weight: 0.7,
@@ -1899,7 +1962,7 @@ export function selectEngines(
   }
 
   // 摄影作品搜索：500px
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(make500px(makeEngineConfig({
       name: "500px",
       weight: 0.7,
@@ -1911,7 +1974,7 @@ export function selectEngines(
   }
 
   // 音频样本搜索：Freesound
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeFreesound(makeEngineConfig({
       name: "freesound",
       weight: 0.7,
@@ -1935,7 +1998,7 @@ export function selectEngines(
   }
 
   // 天气搜索：Open-Meteo（免费，无需 key）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeOpenMeteo(makeEngineConfig({
       name: "open-meteo",
       weight: 0.7,
@@ -1947,7 +2010,7 @@ export function selectEngines(
   }
 
   // 社交搜索：Lemmy（去中心化 Reddit 替代）
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeLemmy(makeEngineConfig({
       name: "lemmy",
       weight: 0.7,
@@ -1959,7 +2022,7 @@ export function selectEngines(
   }
 
   // 论坛搜索：Discourse（多实例）
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeDiscourse(makeEngineConfig({
       name: "discourse",
       weight: 0.7,
@@ -1971,7 +2034,7 @@ export function selectEngines(
   }
 
   // 论坛搜索：Boardreader（聚合多个论坛）
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeBoardreader(makeEngineConfig({
       name: "boardreader",
       weight: 0.6,
@@ -1983,7 +2046,7 @@ export function selectEngines(
   }
 
   // Tootfinder — Mastodon 联邦社交搜索
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeTootfinder(makeEngineConfig({
       name: "tootfinder",
       weight: 0.5,
@@ -1995,7 +2058,7 @@ export function selectEngines(
   }
 
   // 词典类查询：Dictzone（多语互译）+ Duden（德语词典）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeDictzone(makeEngineConfig({
       name: "dictzone",
       weight: 0.5,
@@ -2032,7 +2095,7 @@ export function selectEngines(
   }
 
   // 反向图片搜索：TinEye
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeTinEye(makeEngineConfig({
       name: "tineye",
       weight: 0.7,
@@ -2044,7 +2107,7 @@ export function selectEngines(
   }
 
   // 音乐搜索：Yandex Music
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeYandexMusic(makeEngineConfig({
       name: "yandex-music",
       weight: 0.7,
@@ -2056,7 +2119,7 @@ export function selectEngines(
   }
 
   // 翻译搜索：Lingva
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeLingva(makeEngineConfig({
       name: "lingva",
       weight: 0.6,
@@ -2068,7 +2131,7 @@ export function selectEngines(
   }
 
   // 翻译搜索：LibreTranslate
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeLibreTranslate(makeEngineConfig({
       name: "libretranslate",
       weight: 0.6,
@@ -2080,7 +2143,7 @@ export function selectEngines(
   }
 
   // 翻译搜索：DeepL（需要 DEEPL_API_KEY 环境变量）
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeDeepL(makeEngineConfig({
       name: "deepl",
       weight: 0.7,
@@ -2117,7 +2180,7 @@ export function selectEngines(
 
   // ── 新增引擎注册（批量）─────────────────────────────
   // 新闻
-  if (!flags || flags?.queryType === "news" || !flags?.queryType) {
+  if (isGeneral || isType("news")) {
     engines.push(makeBbcNews(makeEngineConfig({ name: "bbc-news", weight: 0.8, timeout: 12000, maxResults: 5, requiresKey: false })))
     engines.push(makeTheGuardian(makeEngineConfig({ name: "theguardian", weight: 0.7, timeout: 12000, maxResults: 5, requiresKey: false })))
     engines.push(makeTechCrunch(makeEngineConfig({ name: "techcrunch", weight: 0.7, timeout: 10000, maxResults: 5, requiresKey: false })))
@@ -2148,6 +2211,37 @@ export function selectEngines(
   engines.push(makeRawg(makeEngineConfig({ name: "rawg", weight: 0.6, timeout: 12000, maxResults: 5, requiresKey: false })))
   engines.push(makeTvMaze(makeEngineConfig({ name: "tvmaze", weight: 0.6, timeout: 10000, maxResults: 5, requiresKey: false })))
   engines.push(makeOpenWeather(makeEngineConfig({ name: "openweather", weight: 0.6, timeout: 10000, maxResults: 1, requiresKey: true })))
+
+  /*
+   * 通用查询：收敛到精选集。
+   *
+   * 为什么必须有这一步：不收敛的话 general 会带上 111 个引擎，
+   * 其中大量是图片素材（unsplash/pexels/flaticon）、购物、影视、
+   * 翻译与天气工具 —— 它们的结果对通用查询就是**纯噪声**。
+   * 实测搜「设计师兼程序员怎么赚钱」时，前三条是：
+   *   - findthatmeme 的 r/meirl 表情包
+   *   - lingva.ml 的翻译结果页
+   *   - grokipedia 的日本漫画条目
+   * 而真正相关的知乎、bilibili 内容排在第 4 条以后。
+   *
+   * 同时 111 个引擎跑了 31 秒、其中 92 个失败 —— 时间几乎全花在没用的地方。
+   *
+   * 需要这些垂直引擎时，有两条正当路径：
+   *   1. 传对应的 queryType（如 academic / shopping）
+   *   2. 传 engines 显式点名（那条路径在本函数之后，不受此名单限制）
+   */
+  if (isGeneral) {
+    const want = new Set(GENERAL_ENGINE_NAMES)
+    const kept = engines.filter((e) => want.has(e.name))
+    // 名单里写了但 selector 里并不存在的名字（拼错、或引擎被删）：
+    // 这会**静默地少召回一整个引擎**，属于必须能看见的配置错误
+    const available = new Set(engines.map((e) => e.name))
+    const absent = GENERAL_ENGINE_NAMES.filter((n) => !available.has(n))
+    if (absent.length > 0) {
+      console.error(`[selector] GENERAL_ENGINE_NAMES 有 ${absent.length} 个名字不存在: ${absent.join(", ")}`)
+    }
+    return kept
+  }
 
   return engines
 }

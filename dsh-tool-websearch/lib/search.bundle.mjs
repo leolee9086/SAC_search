@@ -27666,6 +27666,8 @@ var layer = /* @__PURE__ */ layerMergedContext(/* @__PURE__ */ succeed5(fetch2))
 // src/search/aggregator.ts
 var exports_aggregator = {};
 __export(exports_aggregator, {
+  relevance: () => relevance,
+  queryTerms: () => queryTerms,
   normalizeUrl: () => normalizeUrl,
   formatStructuredReport: () => formatStructuredReport,
   formatResults: () => formatResults,
@@ -27848,22 +27850,52 @@ function isSimilarTitle(a, b) {
     return false;
   return levenshtein(a, b) / maxLen < 0.2;
 }
+function queryTerms(query) {
+  const terms = [];
+  const lower = query.toLowerCase();
+  for (const m of lower.matchAll(/[a-z0-9]{2,}/g))
+    terms.push(m[0]);
+  const cjkRuns = query.match(/[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+/g) ?? [];
+  for (const run2 of cjkRuns) {
+    if (run2.length === 1) {
+      terms.push(run2);
+      continue;
+    }
+    for (let i = 0;i < run2.length - 1; i++)
+      terms.push(run2.slice(i, i + 2));
+  }
+  return terms;
+}
+function relevance(text2, query) {
+  if (text2 === "" || query.trim() === "")
+    return 0;
+  const terms = queryTerms(query);
+  if (terms.length === 0)
+    return 0;
+  const lower = text2.toLowerCase();
+  let hit = 0;
+  for (const t of terms)
+    if (lower.includes(t))
+      hit++;
+  return hit / terms.length;
+}
 function calculateScore(engines, positions, weights, publishedDate, title, snippet, query) {
+  let weight = 1;
+  for (const e of engines)
+    weight *= weights.get(e) ?? 1;
+  weight *= Math.max(1, positions.length);
   let score = 0;
-  for (let i = 0;i < engines.length; i++) {
-    score += (weights.get(engines[i]) ?? 1) / positions[i];
+  for (const p of positions)
+    score += weight / Math.max(1, p);
+  if (query !== undefined && query.trim() !== "") {
+    const titleRel = title === undefined ? 0 : relevance(title, query);
+    const snippetRel = snippet === undefined ? 0 : relevance(snippet, query);
+    const rel = Math.max(titleRel, snippetRel * 0.6);
+    score *= 0.15 + 0.85 * rel;
   }
-  if (engines.length > 1)
-    score *= 1 + (engines.length - 1) * 0.2;
-  if (publishedDate) {
+  if (publishedDate !== undefined) {
     const daysAgo = (Date.now() - publishedDate) / 86400000;
-    const recencyFactor = Math.max(0.5, 1 - daysAgo / 365);
-    score *= recencyFactor;
-  }
-  if (query && (title || snippet)) {
-    const titleRel = title ? snippetRelevance(title, query) : 0;
-    const snippetRel = snippet ? snippetRelevance(snippet, query) : 0;
-    score += titleRel * 2 + snippetRel * 1;
+    score *= Math.max(0.75, 1 - daysAgo / 365 * 0.25);
   }
   return score;
 }
@@ -27907,14 +27939,19 @@ function aggregate(allResults, ctx, query) {
     r.score = calculateScore(r.engines, r.positions, ctx.weights, r.publishedDate, r.title, r.snippet, query);
   }
   merged.sort((a, b) => b.score - a.score);
-  return diversifyByDomain(merged, 3).slice(0, ctx.maxResults);
+  const shown = diversifyByDomain(merged, 3).slice(0, ctx.maxResults);
+  return {
+    results: shown,
+    stats: {
+      raw: allResults.length,
+      deduped: mergedByUrl.length,
+      merged: merged.length,
+      shown: shown.length
+    }
+  };
 }
 function snippetRelevance(snippet, query) {
-  if (!query || !snippet)
-    return 0;
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const lower = snippet.toLowerCase();
-  return terms.filter((t) => lower.includes(t)).length / terms.length;
+  return relevance(snippet, query);
 }
 function mergeGroup(group, query) {
   const first = group[0];
@@ -28432,7 +28469,8 @@ var exports_selector = {};
 __export(exports_selector, {
   selectEngines: () => selectEngines,
   engineSummary: () => engineSummary,
-  Selector: () => exports_selector
+  Selector: () => exports_selector,
+  GENERAL_ENGINE_NAMES: () => GENERAL_ENGINE_NAMES
 });
 
 // node_modules/entities/lib/esm/generated/decode-data-html.js
@@ -43079,7 +43117,58 @@ function parseOwmResults(raw2, max4) {
 }
 
 // src/search/selector.ts
+var GENERAL_ENGINE_NAMES = [
+  "duckduckgo",
+  "bing",
+  "brave",
+  "google",
+  "startpage",
+  "mojeek",
+  "marginalia",
+  "baidu",
+  "sogou",
+  "360search",
+  "quark",
+  "yandex",
+  "naver",
+  "qwant",
+  "yahoo",
+  "seznam",
+  "mwmbl",
+  "yep",
+  "wiby",
+  "wikipedia",
+  "britannica-wiki",
+  "wikivoyage",
+  "stackexchange",
+  "hackernews",
+  "github",
+  "github-code",
+  "github-issues",
+  "gitlab",
+  "mdn",
+  "npm",
+  "dockerhub",
+  "packagist",
+  "rubygems",
+  "crates",
+  "huggingface",
+  "zhihu",
+  "douban",
+  "weibo",
+  "xiaohongshu",
+  "reddit",
+  "bbc-news",
+  "theguardian",
+  "techcrunch",
+  "theverge",
+  "arstechnica",
+  "reuters"
+];
 function selectEngines(flags) {
+  const qt = flags?.queryType ?? "general";
+  const isGeneral = qt === "general";
+  const isType = (t) => qt === t;
   const engines = [];
   engines.push(makeDuckDuckGo(makeEngineConfig({
     name: "duckduckgo",
@@ -43096,7 +43185,7 @@ function selectEngines(flags) {
     requiresKey: false
   })));
   const hasBraveKey = !!process.env.BRAVE_API_KEY;
-  if (flags?.brave || hasBraveKey || !flags) {
+  if (flags?.brave || hasBraveKey || isGeneral) {
     engines.push(makeBrave(makeEngineConfig({
       name: "brave",
       weight: 1.2,
@@ -43106,7 +43195,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeStartpage(makeEngineConfig({
       name: "startpage",
       weight: 1.1,
@@ -43116,7 +43205,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeMwmbl(makeEngineConfig({
       name: "mwmbl",
       weight: 0.7,
@@ -43126,7 +43215,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeSeznam(makeEngineConfig({
       name: "seznam",
       weight: 0.7,
@@ -43136,7 +43225,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeAol(makeEngineConfig({
       name: "aol",
       weight: 0.7,
@@ -43146,7 +43235,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeGmx(makeEngineConfig({
       name: "gmx",
       weight: 0.7,
@@ -43156,7 +43245,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeYep(makeEngineConfig({
       name: "yep",
       weight: 0.7,
@@ -43166,7 +43255,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeMojeek(makeEngineConfig({
       name: "mojeek",
       weight: 0.6,
@@ -43176,7 +43265,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeGrokipedia(makeEngineConfig({
       name: "grokipedia",
       weight: 0.5,
@@ -43186,7 +43275,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (flags?.bilibili || !flags || flags?.queryType === "video") {
+  if (flags?.bilibili || isType("video")) {
     engines.push(makeBilibili(makeEngineConfig({
       name: "bilibili",
       weight: 1,
@@ -43195,7 +43284,7 @@ function selectEngines(flags) {
       priority: 0
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeYouTube(makeEngineConfig({
       name: "youtube",
       weight: 1.2,
@@ -43205,7 +43294,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makePiped(makeEngineConfig({
       name: "piped",
       weight: 0.9,
@@ -43215,7 +43304,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeInvidious(makeEngineConfig({
       name: "invidious",
       weight: 0.8,
@@ -43225,7 +43314,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeOdysee(makeEngineConfig({
       name: "odysee",
       weight: 0.7,
@@ -43235,7 +43324,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeBitchute(makeEngineConfig({
       name: "bitchute",
       weight: 0.5,
@@ -43245,7 +43334,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeAcfun(makeEngineConfig({
       name: "acfun",
       weight: 0.5,
@@ -43255,7 +43344,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeIqiyi(makeEngineConfig({
       name: "iqiyi",
       weight: 0.5,
@@ -43265,7 +43354,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeSogouVideos(makeEngineConfig({
       name: "sogou-videos",
       weight: 0.5,
@@ -43275,7 +43364,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "news" || flags?.queryType === "social") {
+  if (isGeneral || isType("news") || isType("social")) {
     engines.push(makeSogouWeChat(makeEngineConfig({
       name: "sogou-wechat",
       weight: 0.9,
@@ -43285,7 +43374,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.lang?.startsWith("zh")) {
+  if (isGeneral || flags?.lang?.startsWith("zh")) {
     engines.push(makeBaidu(makeEngineConfig({
       name: "baidu",
       weight: 0.9,
@@ -43295,7 +43384,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.lang?.startsWith("zh")) {
+  if (isGeneral || flags?.lang?.startsWith("zh")) {
     engines.push(makeChinaso(makeEngineConfig({
       name: "chinaso",
       weight: 0.8,
@@ -43305,7 +43394,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.lang?.startsWith("zh")) {
+  if (isGeneral || flags?.lang?.startsWith("zh")) {
     engines.push(makeQuark(makeEngineConfig({
       name: "quark",
       weight: 0.7,
@@ -43315,7 +43404,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeGoogle(makeEngineConfig({
       name: "google",
       weight: 1.3,
@@ -43325,7 +43414,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeYandex(makeEngineConfig({
       name: "yandex",
       weight: 0.7,
@@ -43335,7 +43424,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeNaver(makeEngineConfig({
       name: "naver",
       weight: 0.7,
@@ -43345,7 +43434,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeSogou(makeEngineConfig({
       name: "sogou",
       weight: 0.8,
@@ -43355,7 +43444,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(make360Search(makeEngineConfig({
       name: "360search",
       weight: 0.7,
@@ -43365,7 +43454,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeBingImages(makeEngineConfig({
       name: "bing-images",
       weight: 0.9,
@@ -43375,7 +43464,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeSogouImages(makeEngineConfig({
       name: "sogou-images",
       weight: 0.6,
@@ -43385,7 +43474,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeBingVideos(makeEngineConfig({
       name: "bing-videos",
       weight: 0.9,
@@ -43395,7 +43484,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeDailymotion(makeEngineConfig({
       name: "dailymotion",
       weight: 0.8,
@@ -43405,7 +43494,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeVimeo(makeEngineConfig({
       name: "vimeo",
       weight: 0.7,
@@ -43415,7 +43504,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeApkMirror(makeEngineConfig({
       name: "apkmirror",
       weight: 0.5,
@@ -43425,7 +43514,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeSoundCloud(makeEngineConfig({
       name: "soundcloud",
       weight: 0.7,
@@ -43435,7 +43524,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeFlickr(makeEngineConfig({
       name: "flickr",
       weight: 0.7,
@@ -43445,7 +43534,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeDouban(makeEngineConfig({
       name: "douban",
       weight: 0.8,
@@ -43455,7 +43544,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeWeibo(makeEngineConfig({
       name: "weibo",
       weight: 0.8,
@@ -43465,7 +43554,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeZhihu(makeEngineConfig({
       name: "zhihu",
       weight: 0.8,
@@ -43475,7 +43564,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeXiaohongshu(makeEngineConfig({
       name: "xiaohongshu",
       weight: 0.7,
@@ -43485,7 +43574,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeReddit(makeEngineConfig({
       name: "reddit",
       weight: 0.7,
@@ -43495,7 +43584,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeTwitter(makeEngineConfig({
       name: "twitter",
       weight: 0.8,
@@ -43505,7 +43594,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeGoogleImages(makeEngineConfig({
       name: "google-images",
       weight: 1,
@@ -43515,7 +43604,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeArxiv(makeEngineConfig({
       name: "arxiv",
       weight: 1,
@@ -43541,7 +43630,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeGitHub(makeEngineConfig({
       name: "github",
       weight: 1,
@@ -43647,7 +43736,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeWikipedia(makeEngineConfig({
       name: "wikipedia",
       weight: 0.9,
@@ -43674,7 +43763,7 @@ function selectEngines(flags) {
   engines.push(makeMediaWiki(makeEngineConfig({ name: "britannica-wiki", weight: 0.5, timeout: 1e4, maxResults: 5, requiresKey: false }), "en.wiktionary.org"));
   engines.push(makeMediaWiki(makeEngineConfig({ name: "wikivoyage", weight: 0.4, timeout: 1e4, maxResults: 5, requiresKey: false }), "en.wikivoyage.org"));
   engines.push(makeStackExchange(makeEngineConfig({ name: "stackexchange", weight: 0.8, timeout: 1e4, maxResults: 5, requiresKey: false })));
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeIMDb(makeEngineConfig({
       name: "imdb",
       weight: 0.8,
@@ -43684,7 +43773,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeGooglePlay(makeEngineConfig({
       name: "google-play",
       weight: 0.7,
@@ -43694,7 +43783,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeGoodreads(makeEngineConfig({
       name: "goodreads",
       weight: 0.7,
@@ -43704,7 +43793,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeCrates(makeEngineConfig({
       name: "crates",
       weight: 0.8,
@@ -43730,7 +43819,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makePyPIHtml(makeEngineConfig({
       name: "pypi-html",
       weight: 0.8,
@@ -43740,7 +43829,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeOpenLibrary(makeEngineConfig({
       name: "openlibrary",
       weight: 0.7,
@@ -43750,7 +43839,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeWallhaven(makeEngineConfig({
       name: "wallhaven",
       weight: 0.7,
@@ -43760,7 +43849,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeAdobeStock(makeEngineConfig({
       name: "adobe-stock",
       weight: 0.6,
@@ -43770,7 +43859,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeFindThatMeme(makeEngineConfig({
       name: "findthatmeme",
       weight: 0.4,
@@ -43780,7 +43869,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeCrossRef(makeEngineConfig({
       name: "crossref",
       weight: 0.9,
@@ -43822,7 +43911,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeOpenverse(makeEngineConfig({
       name: "openverse",
       weight: 0.7,
@@ -43832,7 +43921,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeEbay(makeEngineConfig({
       name: "ebay",
       weight: 0.7,
@@ -43842,7 +43931,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeSmzdm(makeEngineConfig({
       name: "smzdm",
       weight: 0.8,
@@ -43852,7 +43941,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeJd(makeEngineConfig({
       name: "jd",
       weight: 0.7,
@@ -43862,7 +43951,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeTaobao(makeEngineConfig({
       name: "taobao",
       weight: 0.7,
@@ -43872,7 +43961,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makePdd(makeEngineConfig({
       name: "pdd",
       weight: 0.7,
@@ -43882,7 +43971,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeAmazonCn(makeEngineConfig({
       name: "amazon-cn",
       weight: 0.6,
@@ -43892,7 +43981,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeSuning(makeEngineConfig({
       name: "suning",
       weight: 0.7,
@@ -43902,7 +43991,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeGome(makeEngineConfig({
       name: "gome",
       weight: 0.6,
@@ -43912,7 +44001,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeAmazonUs(makeEngineConfig({
       name: "amazon-us",
       weight: 0.6,
@@ -43922,7 +44011,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeVip(makeEngineConfig({
       name: "vip",
       weight: 0.7,
@@ -43932,7 +44021,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeYipin(makeEngineConfig({
       name: "1688",
       weight: 0.6,
@@ -43942,7 +44031,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeDangdang(makeEngineConfig({
       name: "dangdang",
       weight: 0.6,
@@ -43952,7 +44041,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "shopping") {
+  if (isGeneral || isType("shopping")) {
     engines.push(makeKaola(makeEngineConfig({
       name: "kaola",
       weight: 0.6,
@@ -43962,7 +44051,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makePinterest(makeEngineConfig({
       name: "pinterest",
       weight: 0.7,
@@ -43972,7 +44061,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeQwant(makeEngineConfig({
       name: "qwant",
       weight: 0.8,
@@ -43982,7 +44071,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeYahoo(makeEngineConfig({
       name: "yahoo",
       weight: 0.8,
@@ -43992,7 +44081,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeRottenTomatoes(makeEngineConfig({
       name: "rottentomatoes",
       weight: 0.7,
@@ -44002,7 +44091,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeSteam(makeEngineConfig({
       name: "steam",
       weight: 0.7,
@@ -44012,7 +44101,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makePexels(makeEngineConfig({
       name: "pexels",
       weight: 0.7,
@@ -44022,7 +44111,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeOpenAlex(makeEngineConfig({
       name: "openalex",
       weight: 0.9,
@@ -44032,7 +44121,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeNiconico(makeEngineConfig({
       name: "niconico",
       weight: 0.7,
@@ -44042,7 +44131,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeDeviantArt(makeEngineConfig({
       name: "deviantart",
       weight: 0.7,
@@ -44052,7 +44141,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeGoogleVideos(makeEngineConfig({
       name: "google-videos",
       weight: 0.9,
@@ -44062,7 +44151,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeBandcamp(makeEngineConfig({
       name: "bandcamp",
       weight: 0.7,
@@ -44072,7 +44161,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeGenius(makeEngineConfig({
       name: "genius",
       weight: 0.7,
@@ -44082,7 +44171,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeImgur(makeEngineConfig({
       name: "imgur",
       weight: 0.7,
@@ -44092,7 +44181,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeRumble(makeEngineConfig({
       name: "rumble",
       weight: 0.7,
@@ -44102,7 +44191,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makePkgGoDev(makeEngineConfig({
       name: "pkg-go-dev",
       weight: 0.8,
@@ -44112,7 +44201,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makePeerTube(makeEngineConfig({
       name: "peertube",
       weight: 0.7,
@@ -44122,7 +44211,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(makeSepiaSearch(makeEngineConfig({
       name: "sepiasearch",
       weight: 0.6,
@@ -44132,7 +44221,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makePixiv(makeEngineConfig({
       name: "pixiv",
       weight: 0.7,
@@ -44142,7 +44231,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeDeezer(makeEngineConfig({
       name: "deezer",
       weight: 0.7,
@@ -44152,7 +44241,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeFyyd(makeEngineConfig({
       name: "fyyd",
       weight: 0.5,
@@ -44162,7 +44251,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "news") {
+  if (isGeneral || isType("news")) {
     engines.push(makeReuters(makeEngineConfig({
       name: "reuters",
       weight: 0.8,
@@ -44172,7 +44261,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeRadioBrowser(makeEngineConfig({
       name: "radio-browser",
       weight: 0.5,
@@ -44182,7 +44271,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeWttr(makeEngineConfig({
       name: "wttr",
       weight: 0.6,
@@ -44192,7 +44281,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "news") {
+  if (isGeneral || isType("news")) {
     engines.push(makeYahooNews(makeEngineConfig({
       name: "yahoo-news",
       weight: 0.8,
@@ -44202,7 +44291,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "news") {
+  if (isGeneral || isType("news")) {
     engines.push(makeTagesschau(makeEngineConfig({
       name: "tagesschau",
       weight: 0.5,
@@ -44212,7 +44301,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "news") {
+  if (isGeneral || isType("news")) {
     engines.push(makeAnsa(makeEngineConfig({
       name: "ansa",
       weight: 0.5,
@@ -44222,7 +44311,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "general") {
+  if (isGeneral || isType("general")) {
     engines.push(makeSensCritique(makeEngineConfig({
       name: "senscritique",
       weight: 0.4,
@@ -44232,7 +44321,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeMixcloud(makeEngineConfig({
       name: "mixcloud",
       weight: 0.7,
@@ -44242,7 +44331,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeLibRs(makeEngineConfig({
       name: "lib-rs",
       weight: 0.7,
@@ -44252,7 +44341,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeNvd(makeEngineConfig({
       name: "nvd",
       weight: 0.5,
@@ -44262,7 +44351,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeRepology(makeEngineConfig({
       name: "repology",
       weight: 0.5,
@@ -44272,7 +44361,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeFDroid(makeEngineConfig({
       name: "fdroid",
       weight: 0.7,
@@ -44282,7 +44371,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeMastodon(makeEngineConfig({
       name: "mastodon",
       weight: 0.7,
@@ -44292,7 +44381,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeCurrencyConvert(makeEngineConfig({
       name: "currency-convert",
       weight: 0.7,
@@ -44302,7 +44391,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeArtStation(makeEngineConfig({
       name: "artstation",
       weight: 0.7,
@@ -44312,7 +44401,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeArtic(makeEngineConfig({
       name: "artic",
       weight: 0.5,
@@ -44322,7 +44411,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(make1x(makeEngineConfig({
       name: "1x",
       weight: 0.3,
@@ -44332,7 +44421,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeCara(makeEngineConfig({
       name: "cara",
       weight: 0.5,
@@ -44342,7 +44431,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeOpenClipArt(makeEngineConfig({
       name: "openclipart",
       weight: 0.4,
@@ -44352,7 +44441,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeLoc(makeEngineConfig({
       name: "loc",
       weight: 0.4,
@@ -44362,7 +44451,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeIpernity(makeEngineConfig({
       name: "ipernity",
       weight: 0.4,
@@ -44372,7 +44461,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeUxwing(makeEngineConfig({
       name: "uxwing",
       weight: 0.3,
@@ -44382,7 +44471,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeFlaticon(makeEngineConfig({
       name: "flaticon",
       weight: 0.3,
@@ -44392,7 +44481,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeSelfhst(makeEngineConfig({
       name: "selfhst",
       weight: 0.2,
@@ -44402,7 +44491,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeDevicons(makeEngineConfig({
       name: "devicons",
       weight: 0.2,
@@ -44412,7 +44501,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeLucide(makeEngineConfig({
       name: "lucide",
       weight: 0.2,
@@ -44422,7 +44511,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeMaterialIcons(makeEngineConfig({
       name: "material-icons",
       weight: 0.2,
@@ -44432,7 +44521,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "academic") {
+  if (isGeneral || isType("academic")) {
     engines.push(makeWikidata(makeEngineConfig({
       name: "wikidata",
       weight: 0.8,
@@ -44442,7 +44531,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeWikimediaCommons(makeEngineConfig({
       name: "wikicommons",
       weight: 0.7,
@@ -44452,7 +44541,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeMetacpan(makeEngineConfig({
       name: "metacpan",
       weight: 0.8,
@@ -44462,7 +44551,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeArchLinux(makeEngineConfig({
       name: "archlinux",
       weight: 0.7,
@@ -44472,7 +44561,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeAlpineLinux(makeEngineConfig({
       name: "alpinelinux",
       weight: 0.7,
@@ -44482,7 +44571,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "code") {
+  if (isGeneral || isType("code")) {
     engines.push(makeVoidLinux(makeEngineConfig({
       name: "voidlinux",
       weight: 0.7,
@@ -44492,7 +44581,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "video") {
+  if (isGeneral || isType("video")) {
     engines.push(make500px(makeEngineConfig({
       name: "500px",
       weight: 0.7,
@@ -44502,7 +44591,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeFreesound(makeEngineConfig({
       name: "freesound",
       weight: 0.7,
@@ -44522,7 +44611,7 @@ function selectEngines(flags) {
       requiresKey: true
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeOpenMeteo(makeEngineConfig({
       name: "open-meteo",
       weight: 0.7,
@@ -44532,7 +44621,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeLemmy(makeEngineConfig({
       name: "lemmy",
       weight: 0.7,
@@ -44542,7 +44631,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeDiscourse(makeEngineConfig({
       name: "discourse",
       weight: 0.7,
@@ -44552,7 +44641,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeBoardreader(makeEngineConfig({
       name: "boardreader",
       weight: 0.6,
@@ -44562,7 +44651,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeTootfinder(makeEngineConfig({
       name: "tootfinder",
       weight: 0.5,
@@ -44572,7 +44661,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeDictzone(makeEngineConfig({
       name: "dictzone",
       weight: 0.5,
@@ -44606,7 +44695,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeTinEye(makeEngineConfig({
       name: "tineye",
       weight: 0.7,
@@ -44616,7 +44705,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags || flags?.queryType === "social") {
+  if (isGeneral || isType("social")) {
     engines.push(makeYandexMusic(makeEngineConfig({
       name: "yandex-music",
       weight: 0.7,
@@ -44626,7 +44715,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeLingva(makeEngineConfig({
       name: "lingva",
       weight: 0.6,
@@ -44636,7 +44725,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeLibreTranslate(makeEngineConfig({
       name: "libretranslate",
       weight: 0.6,
@@ -44646,7 +44735,7 @@ function selectEngines(flags) {
       requiresKey: false
     })));
   }
-  if (!flags) {
+  if (isGeneral) {
     engines.push(makeDeepL(makeEngineConfig({
       name: "deepl",
       weight: 0.7,
@@ -44677,7 +44766,7 @@ function selectEngines(flags) {
       e.config.maxResults = Math.max(e.config.maxResults, 10);
     }
   }
-  if (!flags || flags?.queryType === "news" || !flags?.queryType) {
+  if (isGeneral || isType("news")) {
     engines.push(makeBbcNews(makeEngineConfig({ name: "bbc-news", weight: 0.8, timeout: 12000, maxResults: 5, requiresKey: false })));
     engines.push(makeTheGuardian(makeEngineConfig({ name: "theguardian", weight: 0.7, timeout: 12000, maxResults: 5, requiresKey: false })));
     engines.push(makeTechCrunch(makeEngineConfig({ name: "techcrunch", weight: 0.7, timeout: 1e4, maxResults: 5, requiresKey: false })));
@@ -44703,6 +44792,16 @@ function selectEngines(flags) {
   engines.push(makeRawg(makeEngineConfig({ name: "rawg", weight: 0.6, timeout: 12000, maxResults: 5, requiresKey: false })));
   engines.push(makeTvMaze(makeEngineConfig({ name: "tvmaze", weight: 0.6, timeout: 1e4, maxResults: 5, requiresKey: false })));
   engines.push(makeOpenWeather(makeEngineConfig({ name: "openweather", weight: 0.6, timeout: 1e4, maxResults: 1, requiresKey: true })));
+  if (isGeneral) {
+    const want = new Set(GENERAL_ENGINE_NAMES);
+    const kept = engines.filter((e) => want.has(e.name));
+    const available = new Set(engines.map((e) => e.name));
+    const absent = GENERAL_ENGINE_NAMES.filter((n) => !available.has(n));
+    if (absent.length > 0) {
+      console.error(`[selector] GENERAL_ENGINE_NAMES 有 ${absent.length} 个名字不存在: ${absent.join(", ")}`);
+    }
+    return kept;
+  }
   return engines;
 }
 function engineSummary(engines) {
@@ -45172,6 +45271,7 @@ var createRedirectInterceptor = require_redirect_interceptor();
 Object.assign(Dispatcher.prototype, api);
 var $Agent = Agent;
 var $ProxyAgent = ProxyAgent;
+var $EnvHttpProxyAgent = EnvHttpProxyAgent;
 var $interceptors = {
   redirect: require_redirect(),
   retry: require_retry(),
@@ -45252,7 +45352,79 @@ var PROBE_HOSTS = [
   "http://127.0.0.1:8080"
 ];
 var PROBE_TIMEOUT_MS = 5000;
-var NO_PROXY = ["localhost", "127.0.0.1", "::1", ".local"];
+var NO_PROXY = [
+  "localhost",
+  "127.0.0.1",
+  "::1",
+  ".local",
+  "baidu.com",
+  "bdstatic.com",
+  "so.com",
+  "360.cn",
+  "360.com",
+  "sogou.com",
+  "sogoucdn.com",
+  "zhihu.com",
+  "zhimg.com",
+  "douban.com",
+  "doubanio.com",
+  "weibo.com",
+  "weibocdn.com",
+  "xiaohongshu.com",
+  "xhscdn.com",
+  "bilibili.com",
+  "hdslb.com",
+  "iqiyi.com",
+  "qq.com",
+  "gtimg.com",
+  "weixin.qq.com",
+  "163.com",
+  "126.net",
+  "sina.com.cn",
+  "sina.com",
+  "sohu.com",
+  "ifeng.com",
+  "toutiao.com",
+  "bytedance.com",
+  "byteimg.com",
+  "taobao.com",
+  "tmall.com",
+  "alicdn.com",
+  "alibaba.com",
+  "aliyun.com",
+  "1688.com",
+  "jd.com",
+  "360buyimg.com",
+  "pinduoduo.com",
+  "yangkeduo.com",
+  "suning.com",
+  "csdn.net",
+  "juejin.cn",
+  "gitee.com",
+  "oschina.net",
+  "segmentfault.com",
+  "cnblogs.com",
+  "51cto.com",
+  "infoq.cn",
+  "runoob.com",
+  "w3school.com.cn",
+  "liaoxuefeng.com",
+  "chinaso.com",
+  "people.com.cn",
+  "xinhuanet.com",
+  "chinanews.com",
+  "cctv.com",
+  "quark.cn",
+  "uc.cn",
+  "sm.cn",
+  "yisou.com",
+  "sogou.com",
+  "zhipin.com",
+  "lagou.com",
+  "51job.com",
+  "nowcoder.com",
+  "cnbeta.com"
+];
 var PLUGIN_DIR = fileURLToPath(new URL("../", import.meta.url));
 var STATE_FILE = join2(PLUGIN_DIR, "proxy-state.json");
 var state = { enabled: false, proxyUrl: "", source: "none", detectedUrl: "" };
@@ -45332,7 +45504,11 @@ function detectProxyConfig() {
 function applyDispatcher() {
   if (state.enabled && state.proxyUrl) {
     try {
-      $setGlobalDispatcher(new $ProxyAgent({ uri: state.proxyUrl, noProxy: NO_PROXY }));
+      $setGlobalDispatcher(new $EnvHttpProxyAgent({
+        httpProxy: state.proxyUrl,
+        httpsProxy: state.proxyUrl,
+        noProxy: NO_PROXY.join(",")
+      }));
       dispatcherApplied = true;
       return;
     } catch {}
@@ -45406,19 +45582,22 @@ function ensureApplied() {
 // src/runner.ts
 function aggregateText(engines, results, query, numResults) {
   if (results.length === 0)
-    return "";
+    return { text: "", stats: undefined };
   const weights = new Map(engines.map((e) => [e.name, e.config.weight]));
-  const aggregated = exports_aggregator.aggregate(results, { weights, maxResults: numResults }, query);
+  const { results: aggregated, stats } = exports_aggregator.aggregate(results, { weights, maxResults: numResults }, query);
   if (aggregated.length === 0)
-    return "";
-  return exports_aggregator.formatResults(aggregated, query);
+    return { text: "", stats };
+  return { text: exports_aggregator.formatResults(aggregated, query), stats };
 }
-function engineStats(engines, results, errors2, elapsedMs) {
+function engineStats(engines, results, errors2, elapsedMs, agg) {
   const ok = new Set(results.map((r) => r.engine)).size;
   const failed = engines.length - ok;
   const parts2 = [`引擎 ${engines.length} 个`, `成功 ${ok}`, `失败 ${failed}`, `耗时 ${Math.round(elapsedMs / 1000)}s`];
   if (errors2.length > 0)
     parts2.push(`错误 ${errors2.length} 个`);
+  if (agg !== undefined) {
+    parts2.push(`召回 ${agg.raw} → 去重 ${agg.deduped} → 合并 ${agg.merged} → 显示 ${agg.shown}`);
+  }
   return `[${parts2.join(" · ")}]`;
 }
 function listEngines() {
@@ -45457,8 +45636,11 @@ function searchWeb(params, signal, onProgress) {
     const startedAt = Date.now();
     const intent = exports_query_intent.detectQueryIntent(query);
     const effectiveQueryType = params.queryType || intent.queryType || "general";
-    const hasUserFilters = params.queryType !== undefined || params.timeRange !== undefined || params.lang !== undefined;
-    let engines = hasUserFilters ? exports_selector.selectEngines({ queryType: effectiveQueryType, timeRange: params.timeRange, lang: params.lang }) : exports_selector.selectEngines();
+    let engines = exports_selector.selectEngines({
+      queryType: effectiveQueryType,
+      timeRange: params.timeRange,
+      lang: params.lang
+    });
     if (params.engines && params.engines.length > 0) {
       const wanted = new Set(params.engines);
       const picked = engines.filter((e) => wanted.has(e.name));
@@ -45473,13 +45655,13 @@ function searchWeb(params, signal, onProgress) {
     }
     if (engines.length === 0)
       return "没有可用的搜索引擎。";
-    const numResults = params.numResults && params.numResults > 0 ? Math.min(params.numResults, 50) : 8;
+    const numResults = params.numResults && params.numResults > 0 ? Math.min(params.numResults, 200) : 30;
     const opts = exports_engine.makeSearchOptions({ numResults, timeRange: params.timeRange, lang: params.lang });
     const cacheKey = exports_cache.ResultCache.makeKey(query, { numResults, timeRange: params.timeRange, lang: params.lang });
     const cached3 = exports_cache.globalResultCache.get(cacheKey);
     if (cached3 && cached3.length > 0) {
-      const text3 = aggregateText(engines, cached3, query, numResults);
-      const stats2 = engineStats(engines, cached3, [], Date.now() - startedAt);
+      const { text: text3, stats: agg2 } = aggregateText(engines, cached3, query, numResults);
+      const stats2 = engineStats(engines, cached3, [], Date.now() - startedAt, agg2);
       if (text3)
         return `${stats2}
 
@@ -45505,8 +45687,28 @@ function searchWeb(params, signal, onProgress) {
     }
     if (execResult.results.length > 0)
       exports_cache.globalResultCache.set(cacheKey, execResult.results);
-    const stats = engineStats(engines, execResult.results, execResult.errors, Date.now() - startedAt);
-    const text2 = aggregateText(engines, execResult.results, query, numResults);
+    if (process.env.DSH_WEBSEARCH_DEBUG === "1") {
+      const byEngine = new Map;
+      for (const r of execResult.results)
+        byEngine.set(r.engine, (byEngine.get(r.engine) ?? 0) + 1);
+      const withResults = [...byEngine].sort((a, b) => b[1] - a[1]);
+      process.stderr.write(`[websearch] 查询=${JSON.stringify(query)} 类型=${effectiveQueryType} 引擎=${engines.length}
+` + `[websearch] 有结果的引擎 ${withResults.length} 个（共 ${execResult.results.length} 条）:
+` + withResults.map(([n, c]) => `    ${n.padEnd(20)} ${c}`).join(`
+`) + `
+`);
+      process.stderr.write(`[websearch] 报错 ${execResult.errors.length} 个:
+` + execResult.errors.map((e) => `    ${JSON.stringify(e)}`).join(`
+`) + `
+`);
+      const silent = engines.filter((e) => !byEngine.has(e.name));
+      process.stderr.write(`[websearch] 无结果的引擎 ${silent.length} 个:
+` + silent.map((e) => `    ${e.name}`).join(`
+`) + `
+`);
+    }
+    const { text: text2, stats: agg } = aggregateText(engines, execResult.results, query, numResults);
+    const stats = engineStats(engines, execResult.results, execResult.errors, Date.now() - startedAt, agg);
     return `${stats}
 
 ${text2 || "未找到搜索结果。请尝试其他查询词。"}`;

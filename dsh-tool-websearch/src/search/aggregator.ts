@@ -50,15 +50,76 @@ function isSimilarTitle(a: string, b: string): boolean {
 }
 
 /**
- * 计算聚合评分
+ * 把查询切成可匹配的词项。
  *
- * 借鉴 SearXNG 的 calculate_score 算法，但增加了时效性衰减因子和文本相关性。
+ * 为什么要专门处理 CJK：`split(/\s+/)` 对中文**完全失效** ——
+ * 「向上滚动自动加载」会被当成一个词，跟任何文本都匹配不上，
+ * 于是中文查询的相关性恒为 0，相关性这一维等于没有。
  *
- * 评分组成：
- * 1. 基础分 = Σ(weight / position) — 位置越前、引擎权重越高，得分越高
- * 2. 多样性加分 = 基础分 × (1 + (引擎数-1) × 0.2) — 多引擎一致结果加分
- * 3. 时效性衰减 = 分 × max(0.5, 1 - 天数/365) — 一年内线性衰减至 50%
- * 4. 文本相关性加分 = 标题匹配 × 2.0 + snippet匹配 × 1.0
+ * 这里对 CJK 用 **bigram**（相邻两字成词），这是 CJK 检索的标准做法：
+ * 不需要词典，召回过得去、精度也够用（「向上滚动」→ 向上/上滚/滚动）。
+ * 英文与数字按连续字母数字切分，长度 < 2 的丢掉（单字母噪声太大）。
+ */
+export function queryTerms(query: string): string[] {
+  const terms: string[] = []
+  const lower = query.toLowerCase()
+  for (const m of lower.matchAll(/[a-z0-9]{2,}/g)) terms.push(m[0])
+  const cjkRuns = query.match(/[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+/g) ?? []
+  for (const run of cjkRuns) {
+    if (run.length === 1) { terms.push(run); continue }
+    for (let i = 0; i < run.length - 1; i++) terms.push(run.slice(i, i + 2))
+  }
+  return terms
+}
+
+/**
+ * 文本与查询的相关性，0..1。
+ *
+ * 只做「词项命中比例」这一个朴素判断 —— 但对"把不相关的东西挡下去"
+ * 这个目的已经够用，而且快、无依赖、可解释。
+ */
+export function relevance(text: string, query: string): number {
+  if (text === "" || query.trim() === "") return 0
+  const terms = queryTerms(query)
+  if (terms.length === 0) return 0
+  const lower = text.toLowerCase()
+  let hit = 0
+  for (const t of terms) if (lower.includes(t)) hit++
+  return hit / terms.length
+}
+
+/**
+ * 计算聚合评分。
+ *
+ * ## 前半段：共识分（严格对齐 SearXNG 的 `calculate_score`）
+ *
+ * SearXNG 的算法是：
+ * ```
+ * weight = Π(引擎权重) × 命中次数
+ * score  = Σ(weight / position)
+ * ```
+ *
+ * 关键在第二个乘数：**命中次数是线性放大**。
+ * 我们原来写的是 `1 + (命中数-1) × 0.2`（饱和增长）——
+ * 命中 5 个引擎只放 1.8 倍，而 SearXNG 是 5 倍。
+ * 后果是「多个引擎一致认可的结果」和「某个小众引擎的噪声结果」得分接近，
+ * 共识这一维基本失效。
+ *
+ * ## 后半段：相关性（**这是我们与 SearXNG 的关键分歧，必须保留**）
+ *
+ * SearXNG 不做文本相关性，因为它只信少数几个高质量引擎
+ * （Google/Bing/DDG），那些引擎自身的相关性排序就可靠。
+ *
+ * **但我们的引擎池是 186 个、质量参差**，不能照搬"信任引擎"的前提：
+ * 实测搜前端技术词会返回电影、代数几何论文、App Store 应用 ——
+ * 只因为它们恰好被某个窄领域引擎排在了前面。
+ * 所以必须自己算相关性。
+ *
+ * ⚠️ 但相关性**必须是乘法、且不能压过基础分**。
+ * 早先写成加法（`score += titleRel × 2 + snippetRel`）是个严重错误：
+ * 加法项最大 3.0，而基础分通常只有 1 左右 ——
+ * 于是「标题里碰巧含几个查询词」直接压过了「多少引擎认可它」，
+ * 排序彻底失真。改成乘法后，不相关的整体打折、相关的不额外膨胀，主次就正了。
  */
 export function calculateScore(
   engines: readonly string[],
@@ -69,27 +130,33 @@ export function calculateScore(
   snippet?: string,
   query?: string,
 ): number {
-  // 基础分：加权位置分
+  // ── 共识分：Π(权重) × 命中次数，再按位置折算 ──
+  let weight = 1
+  for (const e of engines) weight *= weights.get(e) ?? 1.0
+  weight *= Math.max(1, positions.length)
+
   let score = 0
-  for (let i = 0; i < engines.length; i++) {
-    score += (weights.get(engines[i]) ?? 1.0) / positions[i]
+  for (const p of positions) score += weight / Math.max(1, p)
+
+  // ── 相关性：乘法因子 ──
+  if (query !== undefined && query.trim() !== '') {
+    const titleRel = title === undefined ? 0 : relevance(title, query)
+    const snippetRel = snippet === undefined ? 0 : relevance(snippet, query)
+    // 标题比摘要更权威，所以取「标题相关性」与「打折后的摘要相关性」中的较大者
+    const rel = Math.max(titleRel, snippetRel * 0.6)
+    // 下界 0.15：即使判为不相关也留一点分，避免我们的相关性算法误判时把好结果彻底埋掉
+    score *= 0.15 + 0.85 * rel
   }
 
-  // 引擎多样性加分（多引擎一致 → 置信度高）
-  if (engines.length > 1) score *= 1 + (engines.length - 1) * 0.2
-
-  // 时效性加分（新结果额外加 10%，一年后衰减至 -10%）
-  if (publishedDate) {
+  // ── 时效性：**只做微调，不改变主序** ──
+  //
+  // 原来是一年衰减到 0.5（`max(0.5, 1 - 天数/365)`），力度过大：
+  // 一篇稍微旧但高度相关、多引擎共识的文档，会被一篇新的泛泛之谈翻过去。
+  // 时效性的正确做法是交给引擎的时间过滤（timeRange），
+  // 排序里的衰减只该起"同分时偏向新内容"的作用。
+  if (publishedDate !== undefined) {
     const daysAgo = (Date.now() - publishedDate) / 86_400_000
-    const recencyFactor = Math.max(0.5, 1 - daysAgo / 365)
-    score *= recencyFactor
-  }
-
-  // 文本相关性加分（标题和snippet与查询的匹配度）
-  if (query && (title || snippet)) {
-    const titleRel = title ? snippetRelevance(title, query) : 0
-    const snippetRel = snippet ? snippetRelevance(snippet, query) : 0
-    score += titleRel * 2.0 + snippetRel * 1.0
+    score *= Math.max(0.75, 1 - (daysAgo / 365) * 0.25)
   }
 
   return score
@@ -102,11 +169,34 @@ export interface AggregateContext {
   suggestion?: string
 }
 
+/**
+ * 聚合各阶段的数量。
+ *
+ * 为什么要把这些数字报出来：**"显示 8 条"和"召回 300 条里显示 8 条"
+ * 是完全不同的信息**。只给结果不给数量，调用方就不知道自己错过了多少，
+ * 也无法判断该加大条数还是换关键词重搜。
+ */
+export interface AggregateStats {
+  /** 各引擎返回的原始条目总数 */
+  raw: number
+  /** URL 去重后的条数 */
+  deduped: number
+  /** 相似标题合并后的条数（= 可排序的全部候选） */
+  merged: number
+  /** 实际输出给调用方的条数 */
+  shown: number
+}
+
+export interface AggregateOutcome {
+  results: AggregatedResult[]
+  stats: AggregateStats
+}
+
 export function aggregate(
   allResults: readonly SearchResult[],
   ctx: AggregateContext,
   query?: string,
-): AggregatedResult[] {
+): AggregateOutcome {
   // 从原始结果中提取拼写建议
   if (!ctx.suggestion) {
     for (const r of allResults) {
@@ -143,21 +233,28 @@ export function aggregate(
     merged.push(similarGroup.length === 1 ? similarGroup[0] : mergeSimilar(similarGroup))
   }
 
-  // 阶段 3: 评分（含时效性衰减）+ 多样性排序
+  // 阶段 3: 评分 + 排序
   for (const r of merged) {
     r.score = calculateScore(r.engines, r.positions, ctx.weights, r.publishedDate, r.title, r.snippet, query)
   }
   merged.sort((a, b) => b.score - a.score)
 
-  return diversifyByDomain(merged, 3).slice(0, ctx.maxResults)
+  const shown = diversifyByDomain(merged, 3).slice(0, ctx.maxResults)
+
+  return {
+    results: shown,
+    stats: {
+      raw: allResults.length,
+      deduped: mergedByUrl.length,
+      merged: merged.length,
+      shown: shown.length,
+    },
+  }
 }
 
-/** 计算 snippet 与查询的相关性分数（包含的关键词越多分越高） */
+/** 计算 snippet 与查询的相关性分数（包含的词项越多分越高） */
 function snippetRelevance(snippet: string, query: string): number {
-  if (!query || !snippet) return 0
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
-  const lower = snippet.toLowerCase()
-  return terms.filter((t) => lower.includes(t)).length / terms.length
+  return relevance(snippet, query)
 }
 
 function mergeGroup(group: SearchResult[], query?: string): AggregatedResult {

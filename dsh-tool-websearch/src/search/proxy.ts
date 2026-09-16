@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Effect } from "effect"
-import { Agent, ProxyAgent, setGlobalDispatcher } from "undici"
+import { Agent, EnvHttpProxyAgent, ProxyAgent, setGlobalDispatcher } from "undici"
 
 export interface ProxyConfig {
   readonly http?: string
@@ -26,7 +26,39 @@ const PROBE_HOSTS = [
   "http://127.0.0.1:8080",
 ]
 const PROBE_TIMEOUT_MS = 5_000
-const NO_PROXY = ["localhost", "127.0.0.1", "::1", ".local"]
+/**
+ * 直连白名单：这些域名**不走代理**。
+ *
+ * ## 为什么必须分流，而不是"全走代理"或"全直连"
+ *
+ * 实测两种极端都会瘸一条腿：
+ *   - 全走代理：国内站点大量 `Transport error`
+ *     （360search / douban / weibo 全部失败），中文召回直接少一大块
+ *   - 全直连：墙外站点必然失败（Google / Brave / Startpage / Wikipedia / Reddit）
+ *
+ * 而元搜索的价值恰恰在于**两边都要**：中文内容靠国内引擎，
+ * 技术文档与国际资料靠墙外引擎。所以按域名分流是唯一能同时工作的办法，
+ * 这也是 PAC / 分流规则这套东西存在的原因。
+ *
+ * 域名匹配用后缀形式（`baidu.com` 覆盖 `www.baidu.com`、`tieba.baidu.com`）。
+ */
+const NO_PROXY = [
+  // 本机
+  "localhost", "127.0.0.1", "::1", ".local",
+  // 国内主流站点（直连更快也更可靠）
+  "baidu.com", "bdstatic.com", "so.com", "360.cn", "360.com", "sogou.com", "sogoucdn.com",
+  "zhihu.com", "zhimg.com", "douban.com", "doubanio.com", "weibo.com", "weibocdn.com",
+  "xiaohongshu.com", "xhscdn.com", "bilibili.com", "hdslb.com", "iqiyi.com",
+  "qq.com", "gtimg.com", "weixin.qq.com", "163.com", "126.net", "sina.com.cn", "sina.com",
+  "sohu.com", "ifeng.com", "toutiao.com", "bytedance.com", "byteimg.com",
+  "taobao.com", "tmall.com", "alicdn.com", "alibaba.com", "aliyun.com", "1688.com",
+  "jd.com", "360buyimg.com", "pinduoduo.com", "yangkeduo.com", "suning.com",
+  "csdn.net", "juejin.cn", "gitee.com", "oschina.net", "segmentfault.com", "cnblogs.com",
+  "51cto.com", "infoq.cn", "runoob.com", "w3school.com.cn", "liaoxuefeng.com",
+  "chinaso.com", "people.com.cn", "xinhuanet.com", "chinanews.com", "cctv.com",
+  "quark.cn", "uc.cn", "sm.cn", "yisou.com", "sogou.com",
+  "zhipin.com", "lagou.com", "51job.com", "nowcoder.com", "cnbeta.com",
+]
 const PLUGIN_DIR = fileURLToPath(new URL("../", import.meta.url))
 const STATE_FILE = join(PLUGIN_DIR, "proxy-state.json")
 
@@ -117,7 +149,27 @@ export function detectProxyConfig(): Effect.Effect<ProxyConfig, never, never> {
 function applyDispatcher(): void {
   if (state.enabled && state.proxyUrl) {
     try {
-      setGlobalDispatcher(new ProxyAgent({ uri: state.proxyUrl, noProxy: NO_PROXY }))
+      /*
+       * 用 **EnvHttpProxyAgent**，而不是 ProxyAgent。这是修一个真 bug：
+       *
+       * undici 6.x 的 `ProxyAgent` 只接受 `uri` / `auth`，**没有 noProxy 参数**。
+       * 原来写的是 `new ProxyAgent({ uri, noProxy: NO_PROXY })` ——
+       * 那个 `noProxy` 被**静默忽略**，于是所有请求都被塞进代理，
+       * 包括百度/360/豆瓣/微博这些国内站点。后果实测得到：
+       * 360search、douban、weibo 全部报 `Transport error`，
+       * 中文召回直接瘸了一条腿。
+       *
+       * EnvHttpProxyAgent 支持 noProxy，能做到按域名分流：
+       * 墙外站点走代理、国内站点直连 —— 元搜索恰恰是"两边都要"的场景。
+       *
+       * （静默忽略参数这种事最难查：不报错、不掉异常，只是行为不对。
+       *   所以这里也顺带记进注释，免得以后有人又改回去。）
+       */
+      setGlobalDispatcher(new EnvHttpProxyAgent({
+        httpProxy: state.proxyUrl,
+        httpsProxy: state.proxyUrl,
+        noProxy: NO_PROXY.join(","),
+      }))
       dispatcherApplied = true
       return
     } catch {
