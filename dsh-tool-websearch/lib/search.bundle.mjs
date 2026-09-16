@@ -28366,13 +28366,14 @@ function executeEngineSafely(engine, http, query, opts, state) {
     }
     if (error instanceof CaptchaError || error instanceof AccessDeniedError) {
       const status2 = getOrCreateStatus(state, engine.name);
+      const suspendMs = error.suspendedTime ?? exports_Duration.toMillis(exports_Duration.minutes(30));
       status2.lastError = error.message;
       status2.metrics.totalRequests++;
       status2.consecutiveFailures++;
-      status2.suspended = true;
-      status2.suspendedUntil = Date.now() + exports_Duration.toMillis(exports_Duration.minutes(30));
+      status2.suspended = suspendMs > 0;
+      status2.suspendedUntil = suspendMs > 0 ? Date.now() + suspendMs : undefined;
       status2.lastSuspensionReason = error instanceof CaptchaError ? "captcha-challenge" : "access-denied";
-      status2.lastSuspensionDuration = exports_Duration.toMillis(exports_Duration.minutes(30));
+      status2.lastSuspensionDuration = suspendMs;
       return exports_Effect.succeed({
         _tag: "error",
         error: new EngineError({ engine: engine.name, message: error.message, retryable: false })
@@ -29905,12 +29906,13 @@ class Parser {
 // src/search/engines/duckduckgo.ts
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 var DDG_HTML_URL = "https://html.duckduckgo.com/html/";
+var MAX_QUERY_LENGTH = 499;
 var vqdCache = new Map;
 function makeDuckDuckGo(config) {
   return {
     name: config.name,
     config,
-    search: (http, query, opts) => searchWithFallback(http, query, opts)
+    search: (http, query, opts) => searchWithFallback(http, query, opts, config.name)
   };
 }
 function langToKl(lang) {
@@ -29945,46 +29947,74 @@ function timeRangeToDf(timeRange) {
   };
   return map8[timeRange] ?? "";
 }
-function searchWithFallback(http, query, opts) {
+var EMPTY_ATTEMPT = () => ({ results: [] });
+function detectChallenge(html) {
+  if (html.includes('id="challenge-form"') || html.includes("id='challenge-form'")) {
+    return { kind: "captcha", message: "challenge-form" };
+  }
+  if (html.includes("anomaly-modal")) {
+    return { kind: "captcha", message: "anomaly-modal" };
+  }
+  if (html.includes('id="captcha"') || html.includes("id='captcha'")) {
+    return { kind: "captcha", message: "captcha" };
+  }
+  return;
+}
+function searchWithFallback(http, query, opts, engineName) {
   const numResults = opts.numResults || 8;
-  const safeHtml = searchHtmlPost(http, query, numResults, opts).pipe(exports_Effect.catchIf(() => true, () => exports_Effect.succeed([])));
-  const safeJson = searchJsonApi(http, query, numResults).pipe(exports_Effect.catchIf(() => true, () => exports_Effect.succeed([])));
-  const safeLite = searchLite(http, query, numResults).pipe(exports_Effect.catchIf(() => true, () => exports_Effect.succeed([])));
+  const safeHtml = searchHtmlPost(http, query, numResults, opts).pipe(exports_Effect.catchIf(() => true, () => exports_Effect.succeed(EMPTY_ATTEMPT())));
+  const safeJson = searchJsonApi(http, query, numResults).pipe(exports_Effect.catchIf(() => true, () => exports_Effect.succeed(EMPTY_ATTEMPT())));
+  const safeLite = searchLite(http, query, numResults).pipe(exports_Effect.catchIf(() => true, () => exports_Effect.succeed(EMPTY_ATTEMPT())));
   return exports_Effect.gen(function* () {
     const [html, json2, lite] = yield* exports_Effect.all([safeHtml, safeJson, safeLite], { concurrency: "unbounded" });
-    if (html.length > 0)
-      return html;
-    if (json2.length > 0)
-      return json2;
-    return lite;
+    const picked = html.results.length > 0 ? html : json2.results.length > 0 ? json2 : lite;
+    if (picked.results.length > 0)
+      return picked.results;
+    const failure = html.failure ?? json2.failure ?? lite.failure;
+    if (failure !== undefined) {
+      if (failure.kind === "denied") {
+        throw new AccessDeniedError({ engine: engineName, message: failure.message, suspendedTime: 0 });
+      }
+      throw new CaptchaError({ engine: engineName, message: failure.message, suspendedTime: 0 });
+    }
+    return [];
   });
+}
+function acceptLanguageFor(lang) {
+  if (!lang)
+    return "en-US,en;q=0.9";
+  return `${lang},${lang}-${lang.toUpperCase()};q=0.7`;
 }
 function searchHtmlPost(http, query, numResults, opts) {
   return exports_Effect.gen(function* () {
-    const formData2 = new URLSearchParams({ q: query, b: "", kl: langToKl(opts.lang) });
+    if (query.length > MAX_QUERY_LENGTH)
+      return EMPTY_ATTEMPT();
+    const kl = langToKl(opts.lang);
     const df = timeRangeToDf(opts.timeRange);
+    const url = new URL(DDG_HTML_URL);
+    url.searchParams.set("q", query);
+    if (kl !== "wt-wt")
+      url.searchParams.set("kl", kl);
     if (df)
-      formData2.set("df", df);
-    const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL).pipe(exports_HttpClientRequest.setHeaders({
+      url.searchParams.set("df", df);
+    const response = yield* http.execute(exports_HttpClientRequest.get(url.toString()).pipe(exports_HttpClientRequest.setHeaders({
       "User-Agent": USER_AGENT,
-      "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": opts.lang ? `${opts.lang},en;q=0.9` : "en-US,en;q=0.9",
-      "Sec-Fetch-Dest": "document",
-      "Sec-Fetch-Mode": "navigate",
-      "Sec-Fetch-Site": "same-origin",
-      "Sec-Fetch-User": "?1",
-      Referer: "https://html.duckduckgo.com/"
-    }), exports_HttpClientRequest.bodyText(formData2.toString()))).pipe(exports_Effect.timeout("15 seconds"));
+      "Accept-Language": acceptLanguageFor(opts.lang)
+    }))).pipe(exports_Effect.timeout("15 seconds"));
+    if (response.status === 403 || response.status === 401) {
+      return { results: [], failure: { kind: "denied", message: `http ${response.status}` } };
+    }
+    if (response.status === 303)
+      return EMPTY_ATTEMPT();
     if (response.status < 200 || response.status >= 400)
-      return [];
+      return EMPTY_ATTEMPT();
     const html = yield* response.text;
+    const challenge = detectChallenge(html);
+    if (challenge !== undefined)
+      return { results: [], failure: challenge };
     if (html.length < 500)
-      return [];
-    if (html.includes('id="challenge-form"') || html.includes('id="captcha"'))
-      return [];
-    if (response.status === 303 || response.status === 403)
-      return [];
+      return EMPTY_ATTEMPT();
     const vqdMatch = html.match(/<input[^>]*name=["']vqd["'][^>]*value=["']([^"']+)["']/i);
     if (vqdMatch?.[1])
       vqdCache.set(`${query}//${USER_AGENT}`, { vqd: vqdMatch[1], expires: Date.now() + 3600000 });
@@ -29993,9 +30023,9 @@ function searchHtmlPost(http, query, numResults, opts) {
     if (suggestion && results.length > 0) {
       const augmented = [...results];
       augmented[0] = makeSearchResult({ ...augmented[0], suggestion });
-      return augmented;
+      return { results: augmented };
     }
-    return results;
+    return { results };
   });
 }
 function extractSuggestion(html) {
@@ -30012,17 +30042,27 @@ function extractSuggestion(html) {
 }
 function searchJsonApi(http, query, numResults) {
   return exports_Effect.gen(function* () {
+    if (query.length > MAX_QUERY_LENGTH)
+      return EMPTY_ATTEMPT();
     const response = yield* http.execute(exports_HttpClientRequest.get(`https://duckduckgo.com/?q=${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({
       "User-Agent": USER_AGENT,
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.9"
     }))).pipe(exports_Effect.timeout("15 seconds"));
+    if (response.status === 403 || response.status === 401) {
+      return { results: [], failure: { kind: "denied", message: `http ${response.status}` } };
+    }
+    if (response.status === 303)
+      return EMPTY_ATTEMPT();
     if (response.status < 200 || response.status >= 400)
-      return [];
+      return EMPTY_ATTEMPT();
     const html = yield* response.text;
+    const challenge = detectChallenge(html);
+    if (challenge !== undefined)
+      return { results: [], failure: challenge };
     const vqd = html.match(/vqd\s*=\s*["']([^"']+)["']/)?.[1];
     if (!vqd)
-      return [];
+      return EMPTY_ATTEMPT();
     const jsonUrl = new URL("https://links.duckduckgo.com/d.js");
     jsonUrl.searchParams.set("q", query);
     jsonUrl.searchParams.set("vqd", vqd);
@@ -30037,13 +30077,13 @@ function searchJsonApi(http, query, numResults) {
       Referer: "https://duckduckgo.com/"
     }))).pipe(exports_Effect.timeout("15 seconds"));
     if (jsonResponse.status < 200 || jsonResponse.status >= 400)
-      return [];
+      return EMPTY_ATTEMPT();
     const text2 = yield* jsonResponse.text;
     let data;
     try {
       data = JSON.parse(text2);
     } catch {
-      return [];
+      return EMPTY_ATTEMPT();
     }
     const results = [];
     let pos = 0;
@@ -30057,20 +30097,30 @@ function searchJsonApi(http, query, numResults) {
       pos++;
       results.push(makeSearchResult({ title, url: extractUrl(href), snippet: stripHtml(row.a ?? ""), engine: "duckduckgo", position: pos }));
     }
-    return results;
+    return { results };
   });
 }
 function searchLite(http, query, numResults) {
   return exports_Effect.gen(function* () {
+    if (query.length > MAX_QUERY_LENGTH)
+      return EMPTY_ATTEMPT();
     const response = yield* http.execute(exports_HttpClientRequest.get(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({
       "User-Agent": USER_AGENT,
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.9"
     }))).pipe(exports_Effect.timeout("15 seconds"));
+    if (response.status === 403 || response.status === 401) {
+      return { results: [], failure: { kind: "denied", message: `http ${response.status}` } };
+    }
+    if (response.status === 303)
+      return EMPTY_ATTEMPT();
     if (response.status < 200 || response.status >= 400)
-      return [];
+      return EMPTY_ATTEMPT();
     const html = yield* response.text;
-    return parseLiteResults(html, numResults);
+    const challenge = detectChallenge(html);
+    if (challenge !== undefined)
+      return { results: [], failure: challenge };
+    return { results: parseLiteResults(html, numResults) };
   });
 }
 function extractUrl(href) {

@@ -139,6 +139,15 @@ export class EngineError extends Data.TaggedError("EngineError")<{
 export class CaptchaError extends Data.TaggedError("CaptchaError")<{
   engine: string
   message: string
+  /**
+   * 暂停该引擎多久（毫秒）。缺省时由框架决定（30 分钟）。
+   *
+   * 为什么让**引擎自己**声明：不同站点的验证墙性质完全不同。
+   * 参照 SearXNG 的做法：DuckDuckGo 的验证墙只是「这次查询没通过」，
+   * 它的 IP 并未被封，所以传 0（不暂停）；而真正被封的站点才需要长时间暂停。
+   * 这个差别只有各引擎自己知道，框架统一硬编码会两边都错。
+   */
+  suspendedTime?: number
 }> {}
 
 export class RateLimitError extends Data.TaggedError("RateLimitError")<{
@@ -151,6 +160,8 @@ export class RateLimitError extends Data.TaggedError("RateLimitError")<{
 export class AccessDeniedError extends Data.TaggedError("AccessDeniedError")<{
   engine: string
   message: string
+  /** 同 CaptchaError.suspendedTime：缺省由框架决定 */
+  suspendedTime?: number
 }> {}
 
 /** 引擎超时 */

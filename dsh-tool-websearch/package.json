@@ -1,6 +1,6 @@
 {
   "name": "dsh-tool-websearch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH 多引擎元搜索插件：免 API key 并发调用约 200 个搜索引擎，提供 web_search_meta / web_search_status / web_search_proxy 三个 Host 工具与浏览器结果卡",
   "author": "leolee9086",
   "repository": {

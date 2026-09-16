@@ -227,15 +227,18 @@ function executeEngineSafely(
         })
       }
       if (error instanceof CaptchaError || error instanceof AccessDeniedError) {
-        // CAPTCHA 和拒绝 → 永久暂停（不计数，自然恢复周期 30 分钟）
+        // 验证/拒绝的暂停时长由**引擎自己**声明，缺省才用 30 分钟。
+        // 参照 SearXNG：DDG 的验证墙传 0（它的 IP 并未被封，不该停掉整个引擎），
+        // 而真正被封的站点不传、走默认的长暂停。统一硬编码会让两边都错。
         const status = getOrCreateStatus(state, engine.name)
+        const suspendMs = error.suspendedTime ?? Duration.toMillis(Duration.minutes(30))
         status.lastError = error.message
         status.metrics.totalRequests++
         status.consecutiveFailures++ // 计数以便后续可能自动恢复
-        status.suspended = true
-        status.suspendedUntil = Date.now() + Duration.toMillis(Duration.minutes(30))
+        status.suspended = suspendMs > 0
+        status.suspendedUntil = suspendMs > 0 ? Date.now() + suspendMs : undefined
         status.lastSuspensionReason = error instanceof CaptchaError ? "captcha-challenge" : "access-denied"
-        status.lastSuspensionDuration = Duration.toMillis(Duration.minutes(30))
+        status.lastSuspensionDuration = suspendMs
         return Effect.succeed<EngineOutcome>({
           _tag: "error",
           error: new EngineError({ engine: engine.name, message: error.message, retryable: false }),
