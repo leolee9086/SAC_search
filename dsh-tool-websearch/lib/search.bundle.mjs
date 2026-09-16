@@ -27666,6 +27666,7 @@ var layer = /* @__PURE__ */ layerMergedContext(/* @__PURE__ */ succeed5(fetch2))
 // src/search/aggregator.ts
 var exports_aggregator = {};
 __export(exports_aggregator, {
+  unwrapRedirectUrl: () => unwrapRedirectUrl,
   relevance: () => relevance,
   queryTerms: () => queryTerms,
   normalizeUrl: () => normalizeUrl,
@@ -27911,6 +27912,29 @@ function normalizeUrl(url) {
     return url;
   }
 }
+function unwrapRedirectUrl(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    if (host === "bing.com" && u.pathname.startsWith("/ck/a")) {
+      const raw2 = u.searchParams.get("u");
+      if (raw2 !== null && raw2.startsWith("a1")) {
+        const b64 = raw2.slice(2).replace(/-/g, "+").replace(/_/g, "/");
+        const decoded = Buffer.from(b64, "base64").toString("utf8");
+        if (/^https?:\/\//.test(decoded))
+          return decoded;
+      }
+    }
+    if (host.endsWith("google.com") && u.pathname === "/url") {
+      const q = u.searchParams.get("q") ?? u.searchParams.get("url");
+      if (q !== null && /^https?:\/\//.test(q))
+        return q;
+    }
+    return url;
+  } catch {
+    return url;
+  }
+}
 function levenshtein(a, b) {
   const m = a.length;
   const n = b.length;
@@ -28026,8 +28050,12 @@ function aggregate(allResults, ctx, query) {
       }
     }
   }
+  const resolved = allResults.map((r) => {
+    const unwrapped = unwrapRedirectUrl(r.url);
+    return unwrapped === r.url ? r : { ...r, url: unwrapped };
+  });
   const urlMap = new Map;
-  for (const r of allResults) {
+  for (const r of resolved) {
     const key = normalizeUrl(r.url);
     const group = urlMap.get(key) ?? [];
     group.push(r);
@@ -28139,6 +28167,11 @@ function diversifyByDomain(results, maxPerDomain) {
   diversified.push(...remaining);
   return diversified;
 }
+var MAX_SNIPPET_CHARS = 600;
+function cleanSnippet(text2) {
+  const collapsed = text2.replace(/[\s\u3000]+/g, " ").trim();
+  return collapsed.length > MAX_SNIPPET_CHARS ? collapsed.slice(0, MAX_SNIPPET_CHARS) + "…" : collapsed;
+}
 function formatResults(results, query, ctxSuggestion) {
   if (results.length === 0)
     return "";
@@ -28161,7 +28194,7 @@ function formatResults(results, query, ctxSuggestion) {
 ` + `   ${meta.join(" · ")}
 ` + `   ${engineStr} | ${r.url}` + (r.publishedDate ? `
    日期: ${new Date(r.publishedDate).toISOString().slice(0, 10)}` : "") + `
-   ${r.snippet ?? ""}`;
+   ${cleanSnippet(r.snippet ?? "")}`;
   });
   const parts2 = [
     `搜索 "${query}" 共 ${results.length} 条结果：`,

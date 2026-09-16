@@ -34,16 +34,24 @@ const PARAMETERS = {
   type: "object",
   properties: {
     query: { type: "string", description: "搜索查询词(必填)" },
-    numResults: { type: "number", description: "返回结果数(默认 8,最大 50)" },
+    numResults: {
+      type: "number",
+      description:
+        "返回结果数，默认 30、最大 200。默认值刻意给得比「够用」更大 —— "
+        + "元搜索的价值在召回，宁可多给一些噪声，也不要让你不知道自己错过了什么。",
+    },
     queryType: {
       type: "string",
       enum: QUERY_TYPES,
-      description: "查询类型,决定使用的引擎集合(不传时自动检测查询意图)",
+      description:
+        "查询类型，决定使用哪批引擎。不传时按查询词自动检测（通常落到 general）。"
+        + "general 用的是精选的通用引擎集，**不含图片素材/购物/影视这类垂直引擎**"
+        + "（它们混进来会把噪声顶到前面）。只有确实要搜垂直领域时才显式传。",
     },
     timeRange: {
       type: "string",
       enum: TIME_RANGES,
-      description: "时间范围过滤",
+      description: "时间范围过滤（交给引擎处理，比在本地按日期筛更准）",
     },
     lang: {
       type: "string",
@@ -52,7 +60,10 @@ const PARAMETERS = {
     engines: {
       type: "array",
       items: { type: "string" },
-      description: "显式指定引擎白名单(如 ['duckduckgo','bing','baidu'])。不传时使用全部引擎。可用引擎见 web_search_status",
+      description:
+        "显式指定引擎白名单(如 ['duckduckgo','bing','baidu'])。"
+        + "**只在需要冷门垂直引擎时用**，它们不在默认精选集里。"
+        + "可用引擎名见 web_search_status。",
     },
     maxWaitSeconds: {
       type: "number",
@@ -64,9 +75,16 @@ const PARAMETERS = {
 };
 
 const DESCRIPTION =
-  "搜索互联网获取最新信息:多引擎元搜索,本地直接调用 DuckDuckGo/Bing/Google/百度/搜狗等免 API key 引擎," +
-  "并发执行、结果去重聚合、按引擎权重与时效性评分。适用于知识截止日期之后的信息、当前事件、文档、新闻、代码、学术、购物比价等场景。" +
-  "默认使用全部引擎,一次搜索可能需要较长时间,运行中界面实时显示各引擎进度;可用 engines 参数指定子集加速,或用 maxWaitSeconds 设定总超时。";
+  "搜索互联网获取最新信息：多引擎元搜索，并发调用 DuckDuckGo/Bing/Google/百度/搜狗等免 API key 引擎，"
+  + "结果去重后按「多引擎共识 × 文本相关性」排序（中文用结巴词典分词，英文按词）。"
+  + "适用于知识截止日期之后的信息、当前事件、文档、新闻、代码、学术等场景。"
+  + "\n\n输出首行是统计漏斗，例如："
+  + "「[引擎 47 个 · 成功 8 · 失败 39 · 耗时 8s · 召回 97 → 去重 97 → 合并 95 → 显示 30]」。"
+  + "**看召回与显示的差距**：召回远大于显示说明被 numResults 截断了，调大即可拿到更多；"
+  + "失败的引擎通常是被反爬拦住的（百度/搜狗要验证码、Google 返回 JS 壳），属已知情况，不影响其余引擎。"
+  + "\n\n结果按相关性从高到低排，**靠后的更可能是噪声**；"
+  + "需要精确覆盖某个主题时，宁可多取几条自己筛，不要只留前几条。"
+  + "同一结果被多个引擎命中时会标成「引擎A+N更多」，共识度越高越可信。";
 
 function apply(ctx) {
   const progressStore = createProgressStore();

@@ -19,6 +19,48 @@ export function normalizeUrl(url: string): string {
   } catch { return url }
 }
 
+/**
+ * 把搜索引擎的**跳转链接**还原成真实 URL。
+ *
+ * 两个理由，第二个比第一个重要得多：
+ *
+ * 1. **可读性**：`bing.com/ck/a?...&u=a1aHR0cHM6...` 这种链接，
+ *    模型（和我）看不出目标站点、也无法判断这条结果值不值得打开。
+ * 2. **去重**：同一个页面经不同引擎返回时，外层跳转链接各不相同 ——
+ *    不还原就是两条独立结果，于是"多引擎共识"这个最重要的排序信号被稀释。
+ *    所以解包必须发生在**去重之前**。
+ *
+ * 只做**能纯解码**的（Bing、Google）；百度/搜狗的 `link?url=` 是不透明参数，
+ * 需要额外发请求才能还原 —— 那会给每次搜索加一轮网络往返，
+ * 收益不抵开销，保持原样即可。
+ */
+export function unwrapRedirectUrl(url: string): string {
+  try {
+    const u = new URL(url)
+    const host = u.hostname.replace(/^www\./, "")
+
+    // Bing: /ck/a?...&u=a1<base64>   （a1 是它加的标记，不是 base64 内容）
+    if (host === "bing.com" && u.pathname.startsWith("/ck/a")) {
+      const raw = u.searchParams.get("u")
+      if (raw !== null && raw.startsWith("a1")) {
+        const b64 = raw.slice(2).replace(/-/g, "+").replace(/_/g, "/")
+        const decoded = Buffer.from(b64, "base64").toString("utf8")
+        if (/^https?:\/\//.test(decoded)) return decoded
+      }
+    }
+
+    // Google: /url?q=<urlencoded>&sa=...  （这个 q 本身就是明文，只是被编码了）
+    if (host.endsWith("google.com") && u.pathname === "/url") {
+      const q = u.searchParams.get("q") ?? u.searchParams.get("url")
+      if (q !== null && /^https?:\/\//.test(q)) return q
+    }
+
+    return url
+  } catch {
+    return url
+  }
+}
+
 function levenshtein(a: string, b: string): number {
   const m = a.length; const n = b.length
   if (m === 0) return n
@@ -317,9 +359,17 @@ export function aggregate(
     }
   }
 
+  // 阶段 0: 还原跳转链接。**必须在去重之前** ——
+  // 同一页面经不同引擎的跳转链接外层各不相同，不还原就会被当成两条独立结果，
+  // "多引擎共识"这个最重要的排序信号就稀释了。
+  const resolved: SearchResult[] = allResults.map((r) => {
+    const unwrapped = unwrapRedirectUrl(r.url)
+    return unwrapped === r.url ? r : { ...r, url: unwrapped }
+  })
+
   // 阶段 1: URL 去重
   const urlMap = new Map<string, SearchResult[]>()
-  for (const r of allResults) {
+  for (const r of resolved) {
     const key = normalizeUrl(r.url)
     const group = urlMap.get(key) ?? []
     group.push(r)
@@ -441,6 +491,32 @@ function diversifyByDomain(results: AggregatedResult[], maxPerDomain: number): A
   return diversified
 }
 
+/** 单条摘要的字符上限 */
+const MAX_SNIPPET_CHARS = 600
+
+/**
+ * 清理并截断摘要。
+ *
+ * 两件事都必须做，都是实测踩出来的：
+ *
+ * 1. **压缩空白**：有的引擎会把带大量连续空白的原文直接塞进来
+ *    （实测一条 GitHub 结果的摘要有几百个全角空格），
+ *    在输出里就是一大片"空白"，纯浪费上下文。
+ * 2. **截断**：`github-issues` / `npm` 这类 API 引擎会把**整篇文档**当摘要返回，
+ *    实测出现过几万字符的一条 —— 一条就挤掉了其余所有结果的可见度。
+ *
+ * 上限给 600 字是有意的：这个长度足够容纳一段完整的实用信息
+ * （比如妊娠糖尿病的一日三餐菜谱，实测约 500 字），
+ * 又不至于让单条结果失控。**不能截得太短** —— 之前 300 字的限制
+ * 会把这类有价值的长摘要切掉一半。
+ */
+function cleanSnippet(text: string): string {
+  const collapsed = text.replace(/[\s\u3000]+/g, " ").trim()
+  return collapsed.length > MAX_SNIPPET_CHARS
+    ? collapsed.slice(0, MAX_SNIPPET_CHARS) + "…"
+    : collapsed
+}
+
 export function formatResults(results: AggregatedResult[], query: string, ctxSuggestion?: string): string {
   if (results.length === 0) return ""
 
@@ -465,7 +541,7 @@ export function formatResults(results: AggregatedResult[], query: string, ctxSug
         `   ${meta.join(" · ")}\n` +
         `   ${engineStr} | ${r.url}` +
         (r.publishedDate ? `\n   日期: ${new Date(r.publishedDate).toISOString().slice(0, 10)}` : "") +
-        `\n   ${r.snippet ?? ""}`
+        `\n   ${cleanSnippet(r.snippet ?? "")}`
       )
     },
   )
