@@ -3,6 +3,177 @@
 > 这个引擎主要给织自己用，**召回质量由织判定**。
 > 泛化目标（哥给的）：设计师兼程序员怎么赚钱 / 妊娠糖尿病妈妈的全日菜谱 / 怎么利用 AI 赚钱。
 
+## 本轮全部改动与提交（2026-09-16，会话内的完整记录）
+
+仓库：`D:\dev\SAC_search`（插件在子目录 `dsh-tool-websearch/`）
+
+| commit | 内容 |
+|---|---|
+| `0f17b8d` | 召回三处根因：引擎选择（`!flags` 导致 general 丢 Google/百度）、过度截断（8→30、50→200）、排序（对齐 SearXNG 的共识算法）、代理（undici `ProxyAgent` 无 `noProxy` 参数 → 改 `EnvHttpProxyAgent`） |
+| `c145dc4` | SearXNG **候选**引擎 + `docs/searxng.md` |
+| `2298262` | 相关性区分度：中文字符覆盖率 + 虚字过滤 + 下界 0.15→0.05 |
+| `cea6ddf` | 结巴完整词典 + 逆向最大匹配分词（`src/search/zh-cn.ts`、`data/zh-dict.txt`、`data/zh-stopwords.txt`）+ 下界→0.02 |
+| `7106558` | AI 易用性：`unwrapRedirectUrl`（去重前解包跳转链接）+ 摘要清理截断 600 字 + 工具描述校准 |
+| `4bd49ee` | 速度：并发 10→25（可配 `DSH_WEBSEARCH_CONCURRENCY`） |
+| `af22099` | 中文源：bilibili + sogou-videos 纳入通用集（召回 26→49） |
+
+### 改动过的文件（全路径）
+
+```
+D:\dev\SAC_search\dsh-tool-websearch\
+  src\runner.ts                 截断/引擎选择/DEBUG 输出/统计漏斗
+  src\search\aggregator.ts      排序算法、relevance、queryTerms、unwrapRedirectUrl、cleanSnippet
+  src\search\selector.ts        引擎选择语义 + GENERAL_ENGINE_NAMES 精选名单
+  src\search\proxy.ts           EnvHttpProxyAgent + NO_PROXY（已 export）
+  src\search\zh-cn.ts           【新】中文分词
+  src\search\engines\searxng.ts 【新】SearXNG 候选引擎
+  src\search\executor.ts        MAX_CONCURRENCY
+  lib\index.js                  【手写文件，不在 src】工具描述与参数说明 ← 改这里要重载插件
+  data\zh-dict.txt              【新】结巴词典 34.9 万词 4.8MB
+  data\zh-stopwords.txt         【新】停用词 746 词
+  package.json                  files 字段加 data
+  RECALL-NOTES.md               【本文件】
+  docs\searxng.md               【新】SearXNG 部署说明（四个坑）
+  scripts\check-relevance.ts    【新】相关性回归测试（13 项）
+  scripts\diagnose-engines.ts   引擎诊断（支持指定引擎、合并各 queryType、bun 代理）
+  scripts\cdp-grab.mjs          【新】CDP 抓取调研工具
+  scripts\scan-user-agents.mjs  【新】扫 UA
+  scripts\list-selected-engines.mjs、verify-proxy-bypass.mjs
+```
+
+### 命令速查（原样抄，可直接用）
+
+```powershell
+# 构建（改 src 后必做；DSH 用的是 lib/search.bundle.mjs）
+cd D:\dev\SAC_search\dsh-tool-websearch; pnpm run build
+
+# 真实搜索（务必用 node，bun 不认 undici 的 setGlobalDispatcher，结论会错）
+node test/probe.mjs "设计师兼程序员怎么赚钱" 30
+$env:DSH_WEBSEARCH_DEBUG = "1"     # 加这个看引擎级明细
+
+# 相关性回归（秒出，纯函数）
+bun scripts/check-relevance.ts
+
+# 引擎诊断（第 4 个参数是引擎白名单，逗号分隔）
+bun scripts/diagnose-engines.ts "查询词" general "bilibili,zhihu,weibo"
+bun scripts/diagnose-engines.ts "查询词" general          # 不传=全量
+
+# 看过滤后选中了哪些引擎
+bun scripts/list-selected-engines.mjs
+
+# 单测（必须带 --experimental-test-module-mocks，否则 mock.module 报错）
+pnpm test
+
+# SearXNG 本机实例（可选，8899 端口；8888 被 unsloth_studio 占）
+$env:SEARXNG_SETTINGS_PATH = 'D:\dev\searxng\settings.yml'
+cd D:\dev\searxng; .venv\Scripts\python.exe -m searx.webapp
+```
+
+### 坑与根因（避免重犯）
+
+1. **bun 测代理会得出错误结论**：bun 有自己的 fetch，不认 `setGlobalDispatcher`。
+   表现是"墙外引擎全失败"。→ 诊断统一用 `node`；脚本里要跑 bun 就先手动
+   `setGlobalDispatcher(new EnvHttpProxyAgent(...))` 并覆盖 `globalThis.fetch`。
+2. **undici 6.x 的 `ProxyAgent` 没有 `noProxy` 参数** —— 传了会被**静默忽略**，
+   导致国内站点全被塞进代理。→ 用 `EnvHttpProxyAgent`。
+3. **`keep_only` 不会启用 `disabled: true` 的引擎**（SearXNG 配置坑）：
+   它只决定"可用列表里保留谁"。表现是 `/config` 显示 19 个启用却只有 1 个真跑。
+4. **同一查询第二次会命中缓存**，"秒回但结果很少"会让人误判引擎坏了。→ 排查时换新词。
+5. **批量替换的正则漏掉了复合条件**：`if (flags?.bilibili || isType("video"))` 这种
+   前缀形式没被匹配到，导致 bilibili 永远不在通用集里。→ 批量改完必须反向检查一遍。
+6. **PowerShell 里用 `git commit -m` 传含引号/括号的中文消息会解析失败** →
+   把 message 写到文件再 `git commit -F <file>`。
+7. **DSH 的桥接浏览器是用户正在用的窗口**，不要拿它做批量抓取实验；
+   要实验就起独立的 headless Chrome（`--user-data-dir` 指向临时目录）。
+
+### 当前待办（按优先级）
+
+1. **复验微博的 `ERR_CONNECTION_CLOSED`**：加 `--proxy-server="direct://"` 重启 Chrome 再测。
+2. 方向四其余部分：若哥要知乎/小红书，需定夺走哪条路（见上一节的三个选项）。
+3. **dsh-reader 的「向上滚动自动加载」仍未解决**（另一个项目）：
+   哥反馈"会不断停留在当前的进度位置"，疑似手动 scrollTop 补偿与浏览器原生
+   scroll anchoring 叠加。哥让我参考 SOTA（react-virtuoso / TanStack Virtual 的
+   prepend 保位做法）。项目在 `D:\dev\dsh-reader`，`PROGRESS.md` 有全文。
+4. 收尾：关掉实验用的 headless Chrome（`http://127.0.0.1:9222` 那个实例）。
+
+## 方向四：CDP 抓取调研结果（2026-09-16，务必先读这一节）
+
+### 环境与工具
+
+- **Chrome 路径**：`C:\Users\al765\AppData\Local\Google\Chrome\Application\chrome.exe`（实测版本 Chrome/153.0.8010.48）
+- **启动 headless + CDP**（后台跑，实际会 detach）：
+  ```powershell
+  $chrome = "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+  $profile = "$env:TEMP\dsh-cdp-profile"
+  New-Item -ItemType Directory -Force -Path $profile | Out-Null
+  & $chrome --headless --remote-debugging-port=9222 --user-data-dir=$profile --no-first-run --disable-gpu --disable-extensions --window-size=1280,900
+  ```
+- **CDP 端点**：`http://127.0.0.1:9222`
+  - `/json/version` 查浏览器与 WebSocket 地址
+  - `/json/list` 列标签页
+  - `/json/new?<url>` 建标签页 —— **必须用 PUT**（GET 会 405）
+  - `/json/close/<id>` 关标签页
+- **抓取脚本**：`scripts/cdp-grab.mjs`
+  ```powershell
+  node scripts/cdp-grab.mjs 'https://example.com/path' 6000
+  ```
+  第二个参数是**加载后等待毫秒数**（结果常是加载完再异步填充的，不能只等 load 事件）。
+  输出：标题、DOM 长度、若干风控信号计数、纯文本前 400 字。
+
+### 实测数据（都是全新 profile、无登录态）
+
+| 平台 | URL | 页面标题 | DOM 长度 | 结论 |
+|---|---|---|---|---|
+| 知乎 | `https://www.zhihu.com/search?type=content&q=设计师赚钱` | `安全验证 - 知乎` | 27831 | ❌ 风控拦下。正文是「系统监测到您的网络环境存在异常，为保证您的正常访问，请点击下方验证按钮进行验证」 |
+| 微博 | `https://s.weibo.com/weibo?q=设计师赚钱` | `s.weibo.com` | 187420 | ❌ **ERR_CONNECTION_CLOSED** —— 页面**根本没加载**，纯文本是 Chrome 的错误页（"无法访问此网站…意外终止了连接"） |
+| 小红书 | `https://www.xiaohongshu.com/search_result?keyword=设计师赚钱` | `设计师赚钱 - 小红书搜索` | 80336 | ⚠️ 页面正常加载、标题正确，但**需要登录**才显示结果（检测到登录墙） |
+| B站（对照） | `https://search.bilibili.com/all?keyword=设计师赚钱` | `设计师赚钱-哔哩哔哩_bilibili` | 1095873 | ⚠️ DOM 最大、有结果容器与链接，但**它已有可用的 API 引擎，不需要 CDP** |
+
+### 结论与待办
+
+**在无登录态的全新 profile 下，CDP 对知乎/微博/小红书都拿不到结果。**
+
+**微博那条已经复验完毕**（2026-09-16 补测）：杀掉旧实例、用
+`--proxy-server=direct:// --proxy-bypass-list=*` 重启后再测 ——
+`ERR_CONNECTION_CLOSED` 确实是**代理问题**（Chrome 默认走系统代理 7890，
+而国内站点走代理必失败，这个坑我们之前在 undici 侧也踩过、已修）。
+**但排除代理后暴露的真实状态是：标题变成「登录 - 微博」，正文是登录页
+（短信验证登录 / 扫码登录）。所以微博的结论是"需要登录态"，不是"能抓"。**
+
+知乎在直连模式下更直接：DOM 只有 281 字节，内容是 JSON 错误
+```json
+{"error":{"message":"您当前请求存在异常，暂时限制本次访问。如有疑问，您可以通过手机摇一摇或登录后私信知乎小管家反馈。3b753119772199057da970657f19a905","code":40362}}
+```
+即**在接口层就被风控拦掉**（headless 特征 + IP 之前被脚本请求标记过）。
+
+**三家汇总：知乎=风控 403、微博=需登录、小红书=需登录。**
+都不是"技术方案不对"，而是**没有登录态**。
+
+**若知乎/小红书也要，可选的三条路**（都有代价，需哥定夺）：
+1. 用**有登录态的浏览器 profile** —— 但 Chrome profile 是独占的，会和哥自己开着的浏览器冲突；
+2. 走 **DSH 的 browser bridge**（用户授权、用他已经登录的浏览器）—— 但这会操作哥正在用的窗口；
+3. **放弃强风控平台**，专注能抓的源。
+
+**复验用的命令**（下次直接抄）：
+```powershell
+# 杀掉旧实例（监听 9222 的那个）
+Get-NetTCPConnection -LocalPort 9222 -State Listen | Select-Object -Unique OwningProcess |
+  ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+# 直连模式重启
+Start-Process -FilePath "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe" -ArgumentList @(
+  '--headless','--remote-debugging-port=9222',"--user-data-dir=$env:TEMP\dsh-cdp-direct",
+  '--no-first-run','--disable-gpu','--disable-extensions',
+  '--proxy-server=direct://','--proxy-bypass-list=*')
+```
+
+### 目前确实可用的中文源（都不需要 CDP）
+
+`bing` / `searxng`（内含 brave·google·yandex·quark）/ `sogou` / `360search` /
+**`bilibili`（API，实测稳定 30 条）** / `sogou-videos` / `github` / `npm`
+
+**不要再用 shell 去测这些平台是否"能抓"** —— 直接跑
+`bun scripts/diagnose-engines.ts "查询" general "引擎1,引擎2"` 就有明细。
+
 ## 哥给的四个方向与进度（2026-09-16）
 
 | 方向 | 状态 | commit |
