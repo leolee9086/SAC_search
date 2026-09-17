@@ -245,7 +245,16 @@ export const GENERAL_ENGINE_NAMES: readonly string[] = [
   'github', 'github-code', 'github-issues', 'gitlab', 'mdn', 'npm', 'dockerhub',
   'packagist', 'rubygems', 'crates', 'huggingface',
   // ── 中文社区（中文查询的召回补充）──
-  'zhihu', 'douban', 'weibo', 'xiaohongshu', 'reddit', 'bilibili', 'sogou-videos',
+  // chinaso / acfun 是被审计脚本抓出来的：它们的加入条件本来就写了 isGeneral，
+  // 只是我手写这份名单时漏了它们，于是永远进不了通用搜索且毫无提示。
+  'zhihu', 'douban', 'weibo', 'xiaohongshu', 'reddit', 'bilibili', 'acfun',
+  'sogou-videos', 'chinaso',
+  // 微信公众号内容 —— 中文优质内容的重要来源，之前被白名单误挡
+  'sogou-wechat',
+  // 社交（X 上的信息往往比网页更早、更直接）
+  'twitter',
+  // 医学文献：家里有孕妇，这条线可能真用得上（妊娠糖尿病的可靠依据）
+  'pubmed',
   // ── 新闻 ──
   'bbc-news', 'theguardian', 'techcrunch', 'theverge', 'arstechnica', 'reuters',
 ]
@@ -2268,6 +2277,28 @@ export function selectEngines(
     const want = new Set(GENERAL_ENGINE_NAMES)
     // searxng 是聚合器、不是垂直引擎 —— 不受白名单约束（见它上面那段说明）
     const kept = engines.filter((e) => e.name === "searxng" || want.has(e.name))
+
+    /*
+     * 诊断：把**被白名单挡掉**的引擎报到 stderr。
+     *
+     * 为什么需要它：白名单是我手写的，而"条件允许进通用搜索、但不在名单里"
+     * 的引擎会被静默丢弃 —— chinaso（中国搜索）和 acfun 就是这么被埋掉的：
+     * 它们的加入条件写得没错（`isGeneral || ...`），只是我列名单时忘了它们，
+     * 于是永远不参与通用搜索，且不报错、不警告。
+     *
+     * 有了这行输出，每次带 DSH_WEBSEARCH_DEBUG=1 跑就能看见"还有谁被挡着"，
+     * 不用等人肉审计才发现。
+     */
+    if (process.env.DSH_WEBSEARCH_DEBUG === "1") {
+      const dropped = engines
+        .filter((e) => e.name !== "searxng" && !want.has(e.name))
+        .map((e) => e.name)
+      if (dropped.length > 0) {
+        process.stderr.write(
+          `[websearch] 被通用白名单挡掉的引擎 ${dropped.length} 个: ${dropped.join(", ")}\n`,
+        )
+      }
+    }
     // 名单里写了但 selector 里并不存在的名字（拼错、或引擎被删）：
     // 这会**静默地少召回一整个引擎**，属于必须能看见的配置错误
     const available = new Set(engines.map((e) => e.name))
@@ -2275,6 +2306,7 @@ export function selectEngines(
     if (absent.length > 0) {
       console.error(`[selector] GENERAL_ENGINE_NAMES 有 ${absent.length} 个名字不存在: ${absent.join(", ")}`)
     }
+
     return kept
   }
 

@@ -43325,7 +43325,12 @@ var GENERAL_ENGINE_NAMES = [
   "xiaohongshu",
   "reddit",
   "bilibili",
+  "acfun",
   "sogou-videos",
+  "chinaso",
+  "sogou-wechat",
+  "twitter",
+  "pubmed",
   "bbc-news",
   "theguardian",
   "techcrunch",
@@ -44970,6 +44975,13 @@ function selectEngines(flags) {
   if (isGeneral) {
     const want = new Set(GENERAL_ENGINE_NAMES);
     const kept = engines.filter((e) => e.name === "searxng" || want.has(e.name));
+    if (process.env.DSH_WEBSEARCH_DEBUG === "1") {
+      const dropped = engines.filter((e) => e.name !== "searxng" && !want.has(e.name)).map((e) => e.name);
+      if (dropped.length > 0) {
+        process.stderr.write(`[websearch] 被通用白名单挡掉的引擎 ${dropped.length} 个: ${dropped.join(", ")}
+`);
+      }
+    }
     const available = new Set(engines.map((e) => e.name));
     const absent = GENERAL_ENGINE_NAMES.filter((n) => !available.has(n));
     if (absent.length > 0) {
