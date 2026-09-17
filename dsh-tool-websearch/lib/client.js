@@ -528,7 +528,7 @@ window.__ModuleLoader__.load({
 					},
 				},
 					react.createElement("span", { style: { fontSize: 14, lineHeight: "1" } }, "\uD83D\uDD0E"),
-					wide ? react.createElement("span", null, "元搜索") : null,
+					wide ? react.createElement("span", null, "搜索") : null,
 				);
 			};
 		}
@@ -576,7 +576,13 @@ window.__ModuleLoader__.load({
 				name: "sidebar.footer.action",
 				id: "websearch-meta-entry",
 				order: 60,
-				label: () => "元搜索",
+				/*
+				 * 标签刻意用两字「搜索」而不是「元搜索」：这一排已经有
+				 * Fetch Router / 会话块索引 / 自检 等入口，侧栏又窄，
+				 * 实测四个字会把同一排的其他入口挤到第二行。
+				 * 全称放在按钮的 title / aria-label 里，hover 能看到。
+				 */
+				label: () => "搜索",
 			}, MetaSearchOpener)));
 		}
 

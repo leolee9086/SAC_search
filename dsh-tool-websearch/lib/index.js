@@ -1,7 +1,7 @@
 // lib/index.js — dsh-tool-websearch 插件入口(host 侧)。
 // 注册 web_search_meta、web_search_status、web_search_proxy；浏览器结果卡和代理开关
 // 由同一包的 ./client entry 渲染。搜索逻辑在构建期打包的自包含 bundle 中。
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createProgressStore } from "./progress.js";
 
@@ -12,6 +12,26 @@ const BUNDLE_URL = new URL("./search.bundle.mjs", import.meta.url);
 const PROGRESS_API = "/api/dsh-websearch/progress";
 const PROXY_API_BASE = "/api/dsh-websearch/proxy";
 const SEARCH_API = "/api/dsh-websearch/search";
+
+/*
+ * bundle 的模块说明符 —— 带构建时间做缓存键。
+ *
+ * 为什么必须带：Node 的 ESM 模块缓存是**按说明符**记的，而 HMR 只重载本文件，
+ * **不会**清掉它 import 过的子模块。于是会出现"磁盘上已经是新 bundle，跑的还是旧的"。
+ * 实测踩到：页签调新接口一直报「bundle 过旧，缺少 searchDetailed」，
+ * 而磁盘上那个文件里明明有（查过了）。
+ *
+ * 带上 mtime 就等于每次 `pnpm run build` 之后都是一个新的说明符，
+ * 开发时改完 bundle 不必重启 Harness。
+ */
+function bundleSpecifier() {
+  try {
+    return `${BUNDLE_URL.href}?v=${Math.floor(statSync(fileURLToPath(BUNDLE_URL)).mtimeMs)}`;
+  } catch {
+    // 文件读不到时退回裸 URL：让 import 自己报错，比在这里掩盖掉好
+    return BUNDLE_URL.href;
+  }
+}
 
 // 工具定义的纯对象形态(parameters 已是 JSON Schema),与 dsh-tool-restart 同构。
 function toolDef(toolName, description, parameters, execute, presentCall) {
@@ -163,7 +183,7 @@ function apply(ctx) {
       handler: async (req, res) => {
         try {
           if (rejected(req, res)) return;
-          const { getProxyState, setProxyEnabled, toggleProxy } = await import("./search.bundle.mjs");
+          const { getProxyState, setProxyEnabled, toggleProxy } = await import(bundleSpecifier());
           const url = new URL(req.url || "/", "http://localhost");
           const method = (req.method || "GET").toUpperCase();
           if (method === "GET") {
@@ -253,7 +273,7 @@ function apply(ctx) {
             return;
           }
 
-          const { searchDetailed } = await import("./search.bundle.mjs");
+          const { searchDetailed } = await import(bundleSpecifier());
           if (typeof searchDetailed !== "function") {
             // bundle 是构建产物，版本不匹配时说清楚怎么办，而不是抛一个看不懂的错
             json(res, 503, { error: "bundle 过旧，缺少 searchDetailed。请在插件目录运行 bun run build 后重载插件。" });
@@ -273,7 +293,7 @@ function apply(ctx) {
   }
 
   // Proxy initialization is non-critical; each search still reports its own request errors.
-  void import("./search.bundle.mjs")
+  void import(bundleSpecifier())
     .then((bundle) => bundle.ensureProxyApplied())
     .catch(() => undefined);
 
@@ -304,7 +324,7 @@ function apply(ctx) {
               }
             }
           : undefined;
-        const { searchWeb } = await import("./search.bundle.mjs");
+        const { searchWeb } = await import(bundleSpecifier());
         return await searchWeb({
           query: args.query,
           numResults: typeof args.numResults === "number" && args.numResults > 0 ? args.numResults : undefined,
@@ -340,7 +360,7 @@ function apply(ctx) {
         if (!existsSync(fileURLToPath(BUNDLE_URL))) {
           return "ERROR: 搜索 bundle 缺失(" + fileURLToPath(BUNDLE_URL) + ")。请在插件目录运行 `bun run build` 后重新安装。";
         }
-        const { listEngines, getStatus } = await import("./search.bundle.mjs");
+        const { listEngines, getStatus } = await import(bundleSpecifier());
         const engines = listEngines();
         const status = getStatus ? getStatus() : null;
         const lines = ["可用引擎 " + engines.length + " 个(全部免 key,无需配置 API key):"];
@@ -376,7 +396,7 @@ function apply(ctx) {
     },
     async function execute(args) {
       try {
-        const { getProxyState, setProxyEnabled, toggleProxy } = await import("./search.bundle.mjs");
+        const { getProxyState, setProxyEnabled, toggleProxy } = await import(bundleSpecifier());
         const action = args && typeof args.action === "string" ? args.action : "get";
         const state = action === "toggle"
           ? await toggleProxy()
