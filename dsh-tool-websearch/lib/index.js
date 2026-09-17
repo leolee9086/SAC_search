@@ -25,6 +25,16 @@ const SEARCH_API = "/api/dsh-websearch/search";
  * 开发时改完 bundle 不必重启 Harness。
  */
 function bundleSpecifier() {
+  /*
+   * 测试可以把 mtime 后缀关掉。
+   *
+   * 为什么需要这个开关：`test/progress.test.mjs` 用
+   * `mock.module(<bundle 的裸 URL>, ...)` 拦截这个模块，而 **mock 是按说明符匹配的** ——
+   * 带上 `?v=...` 就对不上，mock 会**静默失效**、测试跑起真实搜索
+   * （表现为"搜索先于进度返回"的断言失败，而且一跑 15 秒）。
+   * 让被 mock 的那条路径保持裸 URL，两边才对得上。
+   */
+  if (process.env.DSH_WEBSEARCH_PLAIN_BUNDLE === "1") return BUNDLE_URL.href;
   try {
     return `${BUNDLE_URL.href}?v=${Math.floor(statSync(fileURLToPath(BUNDLE_URL)).mtimeMs)}`;
   } catch {

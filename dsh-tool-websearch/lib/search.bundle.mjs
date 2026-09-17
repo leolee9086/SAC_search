@@ -31917,7 +31917,7 @@ function searchJsonApi2(http, query, numResults, timeout3, cfg) {
     } catch {
       return [];
     }
-    return cfg.parse(parsed, numResults);
+    return cfg.parse(parsed, numResults).filter((r) => r !== null && typeof r === "object" && typeof r.url === "string" && r.url !== "" && typeof r.title === "string");
   });
 }
 

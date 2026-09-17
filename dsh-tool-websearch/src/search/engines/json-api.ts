@@ -92,7 +92,24 @@ function searchJsonApi(
     let parsed: unknown
     try { parsed = JSON.parse(raw) } catch { return [] }
 
-    return cfg.parse(parsed, numResults)
+    /*
+     * 统一校验各引擎 parse 出来的结果 —— 放在通用层是有意的。
+     *
+     * 为什么：`parse` 是每个引擎各写各的，边界很容易漏。实测踩过：
+     * wiby 的接口返回的数组里**混着没有 url/title 的元素**，
+     * 它的 parse 直接 `slice(0, max).map(...)` 就交上来了，
+     * 结果**一条脏数据让整次聚合抛错**（下游 `unwrapRedirectUrl` 里
+     * `url.replace` 炸掉，页签上显示成一串看不懂的 TypeError）。
+     *
+     * 这里正是"外部数据刚进来"的边界，校验放这一层最合理：
+     * 一次覆盖所有走这个工厂的引擎，也不逼着下游每个函数都写防御。
+     */
+    return cfg.parse(parsed, numResults).filter(
+      (r) =>
+        r !== null && typeof r === "object"
+        && typeof r.url === "string" && r.url !== ""
+        && typeof r.title === "string",
+    )
   })
 }
 

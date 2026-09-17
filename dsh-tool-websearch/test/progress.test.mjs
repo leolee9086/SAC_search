@@ -1,3 +1,15 @@
+/*
+ * 让 lib/index.js 用 bundle 的**裸 URL** 去 import。
+ *
+ * 下面那个 mock.module 的 key 就是裸 URL，而 mock 是**按说明符**匹配的：
+ * 如果 index.js 带着 `?v=<mtime>` 去 import，key 对不上，mock 就**静默失效** ——
+ * 测试会跑起真实搜索（54 个引擎、十几秒），断言自然过不了，
+ * 而且报错信息只会说"搜索先于进度返回"，完全看不出是 mock 没生效。
+ *
+ * 必须在 lib/index.js 被加载**之前**设置（它在 fixture() 里动态 import）。
+ */
+process.env.DSH_WEBSEARCH_PLAIN_BUNDLE = "1";
+
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import { createProgressStore } from "../lib/progress.js";
