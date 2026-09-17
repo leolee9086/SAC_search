@@ -96,6 +96,94 @@ cd D:\dev\searxng; .venv\Scripts\python.exe -m searx.webapp
    prepend 保位做法）。项目在 `D:\dev\dsh-reader`，`PROGRESS.md` 有全文。
 4. 收尾：关掉实验用的 headless Chrome（`http://127.0.0.1:9222` 那个实例）。
 
+## ★ 最新状态（2026-09-16 晚）—— 下次从这里接着干
+
+### 哥的许可与真实诉求
+
+哥看了我关于"三条路需定夺"的汇报后说：
+> 「没事,你使用它们搜索的结果如何呢?」
+
+**含义**：可以用他的浏览器去搜知乎/微信/小红书，**他想看这些平台的实际结果质量**。
+所以下一步不是继续论证方案，而是**直接去搜、把结果拿回来对比**。
+
+### 刚跑完的环境探测（原样记录）
+
+```
+=== 你的 Chrome 是否正在运行 ===
+  未运行
+
+=== 默认 profile 是否存在（含登录态）===
+  路径: C:\Users\al765\AppData\Local\Chrome\User Data\Default
+    ✓ Login Data  40 KB
+    ✓ History  160 KB
+
+=== DSH 的浏览器扩展 ===
+  _locales / assets / panel / background.js / content.js / install-info.json
+```
+
+（注：上面路径里的 `AppData\Local\Chrome` 是记录时的笔误，
+准确路径是 `C:\Users\al765\AppData\Local\Google\Chrome\User Data\Default`）
+
+**三个关键事实**：
+1. **Chrome 当前没有在运行** → 不存在 profile 独占冲突，可以安全地用他的 profile 起 CDP。
+2. **默认 profile 里有登录数据**（`Login Data` 40KB、`History` 160KB）→ **带上它就有登录态**，
+   这正是绕开"知乎风控/微博登录墙/小红书登录墙"的唯一办法。
+3. **browser bridge 没连接**（`browser_snapshot` 返回
+   `Error: no browser extension is connected to the bridge`）→
+   所以 `browser_navigate` / `browser_snapshot` 那一套工具**现在用不了**。
+   DSH 的扩展就在 `C:\Users\al765\.dsh\browser-extension`（要走 bridge 路线得让哥先在 Chrome 里加载它）。
+
+### 下一步的具体做法（命令已备好，直接抄）
+
+```powershell
+# 1) 用哥的默认 profile 起 Chrome + CDP —— 这样带上登录态
+#    注意：**不要加 --headless**（有头更难被风控识别，哥也能看到在做什么）
+$chrome = "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+Start-Process -FilePath $chrome -ArgumentList @(
+  '--remote-debugging-port=9222',
+  '--user-data-dir=C:\Users\al765\AppData\Local\Google\Chrome\User Data',
+  '--profile-directory=Default',
+  '--no-first-run',
+  '--proxy-server=direct://',      # 三家都是国内站点，走代理必失败（已验证）
+  '--proxy-bypass-list=*'
+)
+Start-Sleep -Seconds 8
+curl.exe -s --noproxy "*" --max-time 10 "http://127.0.0.1:9222/json/version"   # 确认就绪
+
+# 2) 用现成工具抓（scripts/cdp-grab.mjs 已写好并测试过）
+cd D:\dev\SAC_search\dsh-tool-websearch
+node scripts/cdp-grab.mjs 'https://www.zhihu.com/search?type=content&q=%E8%AE%BE%E8%AE%A1%E5%B8%88%E5%85%BC%E7%A8%8B%E5%BA%8F%E5%91%98%E6%80%8E%E4%B9%88%E8%B5%9A%E9%92%B1' 6000
+node scripts/cdp-grab.mjs 'https://www.xiaohongshu.com/search_result?keyword=%E8%AE%BE%E8%AE%A1%E5%B8%88%E5%85%BC%E7%A8%8B%E5%BA%8F%E5%91%98%E6%80%8E%E4%B9%88%E8%B5%9A%E9%92%B1' 6000
+node scripts/cdp-grab.mjs 'https://s.weibo.com/weibo?q=%E8%AE%BE%E8%AE%A1%E5%B8%88%E5%85%BC%E7%A8%8B%E5%BA%8F%E5%91%98%E6%80%8E%E4%B9%88%E8%B5%9A%E9%92%B1' 6000
+
+# 3) 用完务必关掉，别占着哥的 profile
+Get-NetTCPConnection -LocalPort 9222 -State Listen | Select-Object -Unique OwningProcess |
+  ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+```
+
+**⚠️ 用哥的 profile 时的注意事项**：
+- **用完必须关**，否则哥自己开 Chrome 会因为 profile 被占用而异常；
+- 抓完顺手关掉我建的标签页（`scripts/cdp-grab.mjs` 已经自己做了这一步）；
+- 不要在哥的 profile 里做实验性导航（只访问要搜的平台）。
+
+### 对比基准：其它引擎对同一查询的结果
+
+搜「设计师兼程序员怎么赚钱」时，目前能用的源给出的前几条是：
+掘金《程序员赚钱案例库》/ 知乎《设计师是怎么赚钱的？？？》/ CSDN《5种赚钱方式，设计师加薪不用靠老板》/
+B站《6个能让你工资FB的国内外网站（程序员接私活，兼职）》/ 什么值得买《程序员副业指南！3个技术变现路子》/
+B站《【副业|赚钱】设计师被动收入月赚上千美金，出售图标icon就可以赚钱》
+
+**拿到知乎/小红书/微博的结果后，跟这份基准对比**，就能回答哥的问题：
+"这些平台到底比现有源强在哪、值不值得为它维护一个登录态依赖"。
+
+### 落盘之后要做的事（优先级）
+
+1. 按上面第 1、2 步抓三个平台，把结果整理给哥（**这是他当前最想看的**）。
+2. 若结果有价值 → 决定要不要做成引擎（那时再考虑登录态怎么复用、profile 冲突怎么处理）。
+3. 若价值有限 → 如实说明，把精力移回 `dsh-reader` 的滚动 bug（见本文件末尾待办）。
+
+---
+
 ## 方向四：CDP 抓取调研结果（2026-09-16，务必先读这一节）
 
 ### 环境与工具
