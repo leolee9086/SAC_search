@@ -160,3 +160,37 @@ if (ctx.sidebarRight.isExpanded() !== true) ctx.layout.openRightbar(false, false
 搜一个词是否有结果。若没出现，先怀疑 Host 那行 HMR 没重载
 （可以再改一次查询串，或重启 Harness）。
 
+## 自己验证时撞到的两个拦路虎（已实测，别再重复踩）
+
+1. **HTTP 层验不出路由是否存在**：鉴权（`connection.requestRejection`）发生在
+   路由匹配**之前** —— 实测 `proxy`、`search`、`nonexistent-xyz` **三个全是 401**。
+   "非 404 即存在"这个判据在这里彻底失效。
+2. **不带 token 打不开页面**：直接访问 `http://127.0.0.1:3080/` 拿到的是纯文本
+   「dsh web authentication required; reopen the URL printed by dsh web」。
+   必须用 `dsh web` 启动时**打印的那个带 token 的 URL**。
+   而那个 URL **不在进程命令行里**（查过 `node` 进程参数，只有内部子进程，没有 token），
+   也不在任何我能读到的环境变量里 —— **所以只能由哥用他浏览器里那个 URL 刷新**。
+
+## 为了能自证而写的工具
+
+`scripts/check-metatab.mjs` —— 借用户浏览器 profile 起 CDP（端口 9223），
+打开 DSH 页面，在页面里查：正文含不含「元搜索」、`sidebar.footer.action` 槽位在不在 DOM、
+页面上所有按钮的 aria-label/文案。
+
+用法（token 到手后）：
+```powershell
+# 1) 起 CDP（借用已登录的 profile）
+$chrome = "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+Start-Process -FilePath $chrome -ArgumentList @(
+  '--headless','--remote-debugging-port=9223',
+  "--user-data-dir=$env:LOCALAPPDATA\Google\Chrome\User Data",'--profile-directory=Default',
+  '--no-first-run','--disable-gpu','--proxy-server=direct://','--proxy-bypass-list=*')
+# 2) 探测（URL 用带 token 的那个）
+$env:CDP_ENDPOINT = "http://127.0.0.1:9223"
+node scripts/check-metatab.mjs "<带 token 的 DSH URL>"
+# 3) 用完务必关掉，别占着用户的 profile
+Get-NetTCPConnection -LocalPort 9223 -State Listen | Select-Object -Unique OwningProcess |
+  ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+```
+
+
