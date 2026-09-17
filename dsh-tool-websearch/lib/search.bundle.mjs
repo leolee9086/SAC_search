@@ -39624,110 +39624,62 @@ function parseSogouImagesResults(html, maxResults) {
 }
 
 // src/search/engines/zhihu.ts
-var BASE_URL44 = "https://www.zhihu.com";
-var USER_AGENT111 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var API_BASE4 = "https://developer.zhihu.com";
+var MAX_COUNT = 10;
 function makeZhihu(config) {
   return {
     name: config.name,
     config,
-    search: (http, query, opts) => searchZhihu(http, query, opts.numResults || config.maxResults, config.timeout)
+    search: (http, query, opts) => searchZhihu(http, query, opts, config.timeout)
   };
 }
-function searchZhihu(http, query, numResults, timeout3) {
+function searchZhihu(http, query, opts, timeout3) {
   return exports_Effect.gen(function* () {
-    const params = new URLSearchParams({
-      q: query,
-      type: "content"
-    });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL44}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT111,
-      Accept: "text/html",
-      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-      Referer: `${BASE_URL44}/`
+    const secret = (process.env.ZHIHU_ACCESS_SECRET ?? "").trim();
+    if (secret === "")
+      return [];
+    const count = Math.min(MAX_COUNT, Math.max(1, opts.numResults ?? MAX_COUNT));
+    const params = new URLSearchParams({ Query: query, Count: String(count) });
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${API_BASE4}/api/v1/content/zhihu_search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      Authorization: `Bearer ${secret}`,
+      "X-Request-Timestamp": String(Math.floor(Date.now() / 1000)),
+      Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
-    const html = yield* response.text;
-    if (!html)
+    const body = yield* response.text;
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
       return [];
-    return parseZhihuResults(html, numResults);
-  });
-}
-function parseZhihuResults(html, maxResults) {
-  const patterns = [
-    {
-      regex: /<a[^>]*class="[^"]*[Ee]ntry[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<p[^>]*class="[^"]*[Rr]ich[Cc]ontent[^"]*"[^>]*>([\s\S]*?)<\/p>/gi,
-      extract(m) {
-        const href = m[1].trim();
-        const title = stripHtml(m[2]);
-        const snippet = stripHtml(m[3] ?? "");
-        if (!title || !href)
-          return null;
-        return { title, href: normalizeZhihuUrl(href), snippet: snippet || "知乎内容" };
-      }
-    },
-    {
-      regex: /<div[^>]*class="[^"]*[Ss]earch[_-][Rr]esult[_-][Ii]tem[^"]*"[^>]*>[\s\S]*?<a[^>]*href="([^"]*)"[^>]*>[\s\S]*?<span[^>]*class="[^"]*[Rr]ich[Ww]ord[^"]*"[^>]*>([\s\S]*?)<\/span>[\s\S]*?<\/a>/gi,
-      extract(m) {
-        const href = m[1].trim();
-        const title = stripHtml(m[2]);
-        if (!title || !href)
-          return null;
-        return { title, href: normalizeZhihuUrl(href), snippet: "知乎回答" };
-      }
-    },
-    {
-      regex: /<a[^>]*href="(\/question\/[^"]*|\/answer\/[^"]*|\/people\/[^"]*|\/p\/[^"]*)"[^>]*>([\s\S]*?)<\/a>/gi,
-      extract(m) {
-        const href = m[1].trim();
-        const title = stripHtml(m[2]);
-        if (!title)
-          return null;
-        return { title, href: `${BASE_URL44}${href}`, snippet: "知乎内容" };
-      }
     }
-  ];
-  for (const { regex, extract } of patterns) {
-    const results = tryParsePattern(html, maxResults, regex, extract);
-    if (results.length > 0)
-      return results;
-  }
-  return [];
-}
-function tryParsePattern(html, maxResults, pattern, extract) {
-  const results = [];
-  let match6;
-  while ((match6 = pattern.exec(html)) !== null) {
-    if (results.length >= maxResults)
-      break;
-    const parsed = extract(match6);
-    if (!parsed)
-      continue;
-    results.push(makeZhihuResult(parsed.title, parsed.href, parsed.snippet, results.length + 1));
-  }
-  return results;
-}
-function normalizeZhihuUrl(href) {
-  if (href.startsWith("/"))
-    return `${BASE_URL44}${href}`;
-  if (!href.startsWith("http"))
-    return `${BASE_URL44}/${href}`;
-  return href;
-}
-function makeZhihuResult(title, url, snippet, position) {
-  return makeSearchResult({
-    title,
-    url,
-    snippet,
-    engine: "zhihu",
-    position,
-    category: "social"
+    if (parsed.Code !== 0)
+      return [];
+    return parseZhihuItems(parsed.Data?.Items ?? [], count);
   });
+}
+function parseZhihuItems(items, maxResults) {
+  const valid = items.filter((it) => typeof it.Url === "string" && it.Url !== "" && typeof it.Title === "string" && it.Title !== "").slice().sort((a, b) => (b.RankingScore ?? 0) - (a.RankingScore ?? 0)).slice(0, maxResults);
+  return valid.map((it, i) => {
+    const published = typeof it.EditTime === "number" ? it.EditTime * 1000 : Number.NaN;
+    return makeSearchResult({
+      title: cleanTitle(it.Title ?? ""),
+      url: it.Url ?? "",
+      snippet: stripHtml(it.ContentText ?? "").trim(),
+      engine: "zhihu",
+      position: i + 1,
+      ...Number.isFinite(published) ? { publishedDate: published } : {}
+    });
+  });
+}
+function cleanTitle(title) {
+  return title.replace(/\s*-\s*知乎\s*$/, "").trim();
 }
 
 // src/search/engines/xiaohongshu.ts
-var BASE_URL45 = "https://www.xiaohongshu.com";
-var USER_AGENT112 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var BASE_URL44 = "https://www.xiaohongshu.com";
+var USER_AGENT111 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeXiaohongshu(config) {
   return {
     name: config.name,
@@ -39737,12 +39689,12 @@ function makeXiaohongshu(config) {
 }
 function searchXiaohongshu(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
-    const url = `${BASE_URL45}/search_result?keyword=${encodeURIComponent(query)}&source=web_search_result_notes`;
+    const url = `${BASE_URL44}/search_result?keyword=${encodeURIComponent(query)}&source=web_search_result_notes`;
     const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT112,
+      "User-Agent": USER_AGENT111,
       Accept: "text/html",
       "Accept-Language": "zh-CN,zh;q=0.9",
-      Referer: `${BASE_URL45}/explore`
+      Referer: `${BASE_URL44}/explore`
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
@@ -39766,9 +39718,9 @@ function parseXiaohongshuResults(html, maxResults) {
     if (!title || !href)
       continue;
     if (href.startsWith("/"))
-      href = `${BASE_URL45}${href}`;
+      href = `${BASE_URL44}${href}`;
     else if (!href.startsWith("http"))
-      href = `${BASE_URL45}/${href}`;
+      href = `${BASE_URL44}/${href}`;
     pos++;
     results.push(makeSearchResult({
       title,
@@ -39789,7 +39741,7 @@ function parseXiaohongshuResults(html, maxResults) {
       if (!title)
         continue;
       if (href.startsWith("/"))
-        href = `${BASE_URL45}${href}`;
+        href = `${BASE_URL44}${href}`;
       pos++;
       results.push(makeSearchResult({
         title,
@@ -39805,8 +39757,8 @@ function parseXiaohongshuResults(html, maxResults) {
 }
 
 // src/search/engines/emojipedia.ts
-var BASE_URL46 = "https://emojipedia.org";
-var USER_AGENT113 = "opencode-search/1.0";
+var BASE_URL45 = "https://emojipedia.org";
+var USER_AGENT112 = "opencode-search/1.0";
 function makeEmojipedia(config) {
   return {
     name: config.name,
@@ -39817,8 +39769,8 @@ function makeEmojipedia(config) {
 function searchEmojipedia(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL46}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT113,
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL45}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT112,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -39845,9 +39797,9 @@ function parseEmojipediaResults(html, maxResults) {
     if (!title || !href || href === "#")
       continue;
     if (href.startsWith("/"))
-      href = `${BASE_URL46}${href}`;
+      href = `${BASE_URL45}${href}`;
     else if (!href.startsWith("http"))
-      href = `${BASE_URL46}/${href}`;
+      href = `${BASE_URL45}/${href}`;
     pos++;
     results.push(makeSearchResult({
       title,
@@ -39862,8 +39814,8 @@ function parseEmojipediaResults(html, maxResults) {
 }
 
 // src/search/engines/cara.ts
-var BASE_URL47 = "https://cara.app";
-var USER_AGENT114 = "opencode-search/1.0";
+var BASE_URL46 = "https://cara.app";
+var USER_AGENT113 = "opencode-search/1.0";
 function makeCara(config) {
   return {
     name: config.name,
@@ -39879,8 +39831,8 @@ function searchCara(http, query, numResults, timeout3) {
       take: String(Math.min(numResults, 24)),
       skip: "0"
     });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL47}/api/search/portfolio-posts?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT114,
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL46}/api/search/portfolio-posts?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT113,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -39929,7 +39881,7 @@ function parseCaraResults(raw2, maxResults) {
     pos++;
     results.push(makeSearchResult({
       title,
-      url: `${BASE_URL47}/post/${item.id}`,
+      url: `${BASE_URL46}/post/${item.id}`,
       snippet: parts2.length > 0 ? `[${parts2.join(" · ")}] ${description}`.trim() : description || "Cara art post",
       engine: "cara",
       position: pos,
@@ -39940,8 +39892,8 @@ function parseCaraResults(raw2, maxResults) {
 }
 
 // src/search/engines/openclipart.ts
-var BASE_URL48 = "https://openclipart.org";
-var USER_AGENT115 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var BASE_URL47 = "https://openclipart.org";
+var USER_AGENT114 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeOpenClipArt(config) {
   return {
     name: config.name,
@@ -39955,8 +39907,8 @@ function searchOpenClipArt(http, query, numResults, timeout3) {
       query,
       p: "1"
     });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL48}/search/?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT115,
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL47}/search/?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT114,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -39981,9 +39933,9 @@ function parseOpenClipArtResults(html, maxResults) {
     if (!href || !alt)
       continue;
     if (href.startsWith("/"))
-      href = `${BASE_URL48}${href}`;
+      href = `${BASE_URL47}${href}`;
     else if (!href.startsWith("http"))
-      href = `${BASE_URL48}/${href}`;
+      href = `${BASE_URL47}/${href}`;
     pos++;
     results.push(makeSearchResult({
       title: alt,
@@ -39998,8 +39950,8 @@ function parseOpenClipArtResults(html, maxResults) {
 }
 
 // src/search/engines/ipernity.ts
-var BASE_URL49 = "https://www.ipernity.com";
-var USER_AGENT116 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var BASE_URL48 = "https://www.ipernity.com";
+var USER_AGENT115 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeIpernity(config) {
   return {
     name: config.name,
@@ -40009,9 +39961,9 @@ function makeIpernity(config) {
 }
 function searchIpernity(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
-    const url = `${BASE_URL49}/search/photo/@/page:1:10?q=${encodeURIComponent(query)}`;
+    const url = `${BASE_URL48}/search/photo/@/page:1:10?q=${encodeURIComponent(query)}`;
     const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT116,
+      "User-Agent": USER_AGENT115,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40052,7 +40004,7 @@ function parseIpernityResults(html, maxResults) {
     if (!img?.href)
       continue;
     const title = info?.title || "Ipernity photo";
-    const docUrl = `${BASE_URL49}${img.href}`;
+    const docUrl = `${BASE_URL48}${img.href}`;
     const imgUrl = img.thumbUrl.replace("240.jpg", "640.jpg");
     const author = info?.user_name || "";
     pos++;
@@ -40070,8 +40022,8 @@ function parseIpernityResults(html, maxResults) {
 }
 
 // src/search/engines/uxwing.ts
-var BASE_URL50 = "https://uxwing.com";
-var USER_AGENT117 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var BASE_URL49 = "https://uxwing.com";
+var USER_AGENT116 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeUxwing(config) {
   return {
     name: config.name,
@@ -40081,9 +40033,9 @@ function makeUxwing(config) {
 }
 function searchUxwing(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
-    const url = `${BASE_URL50}/?s=${encodeURIComponent(query)}`;
+    const url = `${BASE_URL49}/?s=${encodeURIComponent(query)}`;
     const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT117,
+      "User-Agent": USER_AGENT116,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40118,7 +40070,7 @@ function parseUxwingResults(html, maxResults) {
     pos++;
     results.push(makeSearchResult({
       title: alt,
-      url: href.startsWith("http") ? href : `${BASE_URL50}${href}`,
+      url: href.startsWith("http") ? href : `${BASE_URL49}${href}`,
       snippet: tags.length > 0 ? `Icon: ${tags.join(", ")}` : "UXWing icon",
       engine: "uxwing",
       position: pos,
@@ -40129,8 +40081,8 @@ function parseUxwingResults(html, maxResults) {
 }
 
 // src/search/engines/flaticon.ts
-var BASE_URL51 = "https://www.flaticon.com";
-var USER_AGENT118 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var BASE_URL50 = "https://www.flaticon.com";
+var USER_AGENT117 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeFlaticon(config) {
   return {
     name: config.name,
@@ -40141,8 +40093,8 @@ function makeFlaticon(config) {
 function searchFlaticon(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ word: query });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL51}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT118,
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL50}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT117,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40167,9 +40119,9 @@ function parseFlaticonResults(html, maxResults) {
     if (!alt)
       continue;
     if (href.startsWith("/"))
-      href = `${BASE_URL51}${href}`;
+      href = `${BASE_URL50}${href}`;
     else if (!href.startsWith("http"))
-      href = `${BASE_URL51}/${href}`;
+      href = `${BASE_URL50}/${href}`;
     pos++;
     results.push(makeSearchResult({
       title: alt,
@@ -40188,7 +40140,7 @@ function parseFlaticonResults(html, maxResults) {
       const fAlt = fMatch[1].trim();
       if (!fAlt)
         continue;
-      const fHref = fMatch[2].startsWith("http") ? fMatch[2] : `${BASE_URL51}${fMatch[2]}`;
+      const fHref = fMatch[2].startsWith("http") ? fMatch[2] : `${BASE_URL50}${fMatch[2]}`;
       pos++;
       results.push(makeSearchResult({
         title: fAlt,
@@ -40204,8 +40156,8 @@ function parseFlaticonResults(html, maxResults) {
 }
 
 // src/search/engines/tagesschau.ts
-var BASE_URL52 = "https://www.tagesschau.de";
-var USER_AGENT119 = "opencode-search/1.0";
+var BASE_URL51 = "https://www.tagesschau.de";
+var USER_AGENT118 = "opencode-search/1.0";
 function makeTagesschau(config) {
   return {
     name: config.name,
@@ -40220,8 +40172,8 @@ function searchTagesschau(http, query, numResults, timeout3) {
       pageSize: String(Math.min(numResults, 10)),
       resultPage: "0"
     });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL52}/api2u/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT119,
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL51}/api2u/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT118,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40251,7 +40203,7 @@ function parseTagesschauResults(raw2, maxResults) {
     if (!item.title)
       continue;
     const itemType = item.type || "story";
-    const url = item.shareURL || item.detailsweb || `${BASE_URL52}/`;
+    const url = item.shareURL || item.detailsweb || `${BASE_URL51}/`;
     const publishedDate = item.date ? new Date(item.date).getTime() : undefined;
     pos++;
     results.push(makeSearchResult({
@@ -40269,7 +40221,7 @@ function parseTagesschauResults(raw2, maxResults) {
 
 // src/search/engines/selfhst.ts
 var CDN_URL = "https://cdn.jsdelivr.net/gh/selfhst/icons";
-var USER_AGENT120 = "opencode-search/1.0";
+var USER_AGENT119 = "opencode-search/1.0";
 function makeSelfhst(config) {
   return {
     name: config.name,
@@ -40280,7 +40232,7 @@ function makeSelfhst(config) {
 function searchSelfhst(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${CDN_URL}/index.json`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT120,
+      "User-Agent": USER_AGENT119,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40330,7 +40282,7 @@ function parseSelfhstResults(raw2, query, maxResults) {
 
 // src/search/engines/devicons.ts
 var CDN_URL2 = "https://cdn.jsdelivr.net/gh/devicons/devicon@latest";
-var USER_AGENT121 = "opencode-search/1.0";
+var USER_AGENT120 = "opencode-search/1.0";
 function makeDevicons(config) {
   return {
     name: config.name,
@@ -40341,7 +40293,7 @@ function makeDevicons(config) {
 function searchDevicons(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${CDN_URL2}/devicon.json`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT121,
+      "User-Agent": USER_AGENT120,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40397,7 +40349,7 @@ function parseDeviconsResults(raw2, query, maxResults) {
 
 // src/search/engines/lucide.ts
 var CDN_URL3 = "https://cdn.jsdelivr.net/npm/lucide-static";
-var USER_AGENT122 = "opencode-search/1.0";
+var USER_AGENT121 = "opencode-search/1.0";
 function makeLucide(config) {
   return {
     name: config.name,
@@ -40408,7 +40360,7 @@ function makeLucide(config) {
 function searchLucide(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${CDN_URL3}/tags.json`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT122,
+      "User-Agent": USER_AGENT121,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40453,7 +40405,7 @@ function parseLucideResults(raw2, query, maxResults) {
 // src/search/engines/material-icons.ts
 var SEARCH_URL19 = "https://fonts.google.com/metadata/icons?key=material_symbols&incomplete=true";
 var IMG_URL = "https://fonts.gstatic.com/s/i/short-term/release/materialsymbolsoutlined";
-var USER_AGENT123 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var USER_AGENT122 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeMaterialIcons(config) {
   return {
     name: config.name,
@@ -40464,7 +40416,7 @@ function makeMaterialIcons(config) {
 function searchMaterialIcons(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(SEARCH_URL19).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT123,
+      "User-Agent": USER_AGENT122,
       Accept: "application/json",
       Referer: "https://fonts.google.com/"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -40520,7 +40472,7 @@ function parseMaterialIconsResults(raw2, query, maxResults) {
 
 // src/search/engines/hex.ts
 var API_URL35 = "https://hex.pm/api/packages";
-var USER_AGENT124 = "opencode-search/1.0";
+var USER_AGENT123 = "opencode-search/1.0";
 function makeHex(config) {
   return {
     name: config.name,
@@ -40535,7 +40487,7 @@ function searchHex(http, query, numResults, timeout3) {
       per_page: String(Math.min(numResults, 20))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL35}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT124,
+      "User-Agent": USER_AGENT123,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40582,7 +40534,7 @@ function parseHexResults(raw2, maxResults) {
 
 // src/search/engines/microsoft-learn.ts
 var API_URL36 = "https://learn.microsoft.com/api/search";
-var USER_AGENT125 = "opencode-search/1.0";
+var USER_AGENT124 = "opencode-search/1.0";
 function makeMicrosoftLearn(config) {
   return {
     name: config.name,
@@ -40600,7 +40552,7 @@ function searchMicrosoftLearn(http, query, numResults, timeout3) {
       partnerId: "LearnSite"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL36}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT125,
+      "User-Agent": USER_AGENT124,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40643,8 +40595,8 @@ function parseMicrosoftLearnResults(raw2, maxResults) {
 }
 
 // src/search/engines/ansa.ts
-var BASE_URL53 = "https://www.ansa.it";
-var USER_AGENT126 = "opencode-search/1.0";
+var BASE_URL52 = "https://www.ansa.it";
+var USER_AGENT125 = "opencode-search/1.0";
 function makeAnsa(config) {
   return {
     name: config.name,
@@ -40655,8 +40607,8 @@ function makeAnsa(config) {
 function searchAnsa(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL53}/ricerca?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT126,
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL52}/ricerca?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT125,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40681,9 +40633,9 @@ function parseAnsaResults(html, maxResults) {
     if (!title || !href)
       continue;
     if (href.startsWith("/"))
-      href = `${BASE_URL53}${href}`;
+      href = `${BASE_URL52}${href}`;
     else if (!href.startsWith("http"))
-      href = `${BASE_URL53}/${href}`;
+      href = `${BASE_URL52}/${href}`;
     pos++;
     results.push(makeSearchResult({
       title,
@@ -40698,8 +40650,8 @@ function parseAnsaResults(html, maxResults) {
 }
 
 // src/search/engines/senscritique.ts
-var BASE_URL54 = "https://www.senscritique.com";
-var USER_AGENT127 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var BASE_URL53 = "https://www.senscritique.com";
+var USER_AGENT126 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeSensCritique(config) {
   return {
     name: config.name,
@@ -40710,8 +40662,8 @@ function makeSensCritique(config) {
 function searchSensCritique(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL54}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT127,
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL53}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT126,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40736,7 +40688,7 @@ function parseSensCritiqueResults(html, maxResults) {
     if (!title || !href)
       continue;
     if (href.startsWith("/"))
-      href = `${BASE_URL54}${href}`;
+      href = `${BASE_URL53}${href}`;
     pos++;
     results.push(makeSearchResult({
       title,
@@ -40753,7 +40705,7 @@ function parseSensCritiqueResults(html, maxResults) {
 // src/search/engines/pdbe.ts
 var SOLR_URL = "https://www.ebi.ac.uk/pdbe/search/pdb/select";
 var ENTRY_URL = "https://www.ebi.ac.uk/pdbe/entry/pdb";
-var USER_AGENT128 = "opencode-search/1.0";
+var USER_AGENT127 = "opencode-search/1.0";
 function makePdbe(config) {
   return {
     name: config.name,
@@ -40769,7 +40721,7 @@ function searchPdbe(http, query, numResults, timeout3) {
       rows: String(Math.min(numResults, 20))
     }).toString();
     const response = yield* http.execute(exports_HttpClientRequest.post(SOLR_URL).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT128,
+      "User-Agent": USER_AGENT127,
       "Content-Type": "application/x-www-form-urlencoded"
     }), exports_HttpClientRequest.bodyText(body))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40817,8 +40769,8 @@ function parsePdbeResults(raw2, maxResults) {
 }
 
 // src/search/engines/moviepilot.ts
-var BASE_URL55 = "https://www.moviepilot.de";
-var USER_AGENT129 = "opencode-search/1.0";
+var BASE_URL54 = "https://www.moviepilot.de";
+var USER_AGENT128 = "opencode-search/1.0";
 function makeMoviepilot(config) {
   return {
     name: config.name,
@@ -40833,8 +40785,8 @@ function searchMoviepilot(http, query, numResults, timeout3) {
       page: "1",
       type: "suggest"
     });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL55}/api/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT129,
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL54}/api/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT128,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -40862,7 +40814,7 @@ function parseMoviepilotResults(raw2, maxResults) {
       break;
     if (!item.title)
       continue;
-    const url = item.url?.startsWith("http") ? item.url : `${BASE_URL55}${item.url || ""}`;
+    const url = item.url?.startsWith("http") ? item.url : `${BASE_URL54}${item.url || ""}`;
     const info = [item.class, item.info, item.more].filter(Boolean).join(", ");
     pos++;
     results.push(makeSearchResult({
@@ -40884,7 +40836,7 @@ var MIRRORS2 = [
   "https://annas-archive.pk",
   "https://annas-archive.gd"
 ];
-var USER_AGENT130 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT129 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeAnnasArchive(config) {
   return {
     name: config.name,
@@ -40906,7 +40858,7 @@ function searchAnnasArchive(http, query, numResults, timeout3) {
 function tryMirror2(http, baseUrl2, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query, page: "1" });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${baseUrl2}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT130, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3 * 0.8));
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${baseUrl2}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT129, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3 * 0.8));
     if (response.status < 200 || response.status >= 400)
       return [];
     const html = yield* response.text.pipe(exports_Effect.catchIf(() => true, () => exports_Effect.succeed("")));
@@ -40944,8 +40896,8 @@ function parseAnnasArchiveResults(html, maxResults, baseUrl2) {
 }
 
 // src/search/engines/iqiyi.ts
-var BASE_URL56 = "https://so.iqiyi.com";
-var USER_AGENT131 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var BASE_URL55 = "https://so.iqiyi.com";
+var USER_AGENT130 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeIqiyi(config) {
   return {
     name: config.name,
@@ -40955,11 +40907,11 @@ function makeIqiyi(config) {
 }
 function searchIqiyi(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
-    const url = `${BASE_URL56}/so/q_${encodeURIComponent(query)}`;
+    const url = `${BASE_URL55}/so/q_${encodeURIComponent(query)}`;
     const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT131,
+      "User-Agent": USER_AGENT130,
       Accept: "text/html",
-      Referer: `${BASE_URL56}/`
+      Referer: `${BASE_URL55}/`
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
@@ -41025,8 +40977,8 @@ function parseIqiyiResults(html, maxResults) {
 }
 
 // src/search/engines/adobe-stock.ts
-var BASE_URL57 = "https://stock.adobe.com";
-var USER_AGENT132 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var BASE_URL56 = "https://stock.adobe.com";
+var USER_AGENT131 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeAdobeStock(config) {
   return {
     name: config.name,
@@ -41049,8 +41001,8 @@ function searchAdobeStock(http, query, numResults, timeout3) {
       "filters[content_type:3d]": "0",
       "filters[content_type:image]": "1"
     });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL57}/de/Ajax/Search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT132,
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL56}/de/Ajax/Search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT131,
       Accept: "application/json",
       "Accept-Language": "en-US,en;q=0.5"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -41101,8 +41053,8 @@ function parseAdobeStockResults(raw2, maxResults) {
 }
 
 // src/search/engines/mojeek.ts
-var BASE_URL58 = "https://www.mojeek.com";
-var USER_AGENT133 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var BASE_URL57 = "https://www.mojeek.com";
+var USER_AGENT132 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeMojeek(config) {
   return {
     name: config.name,
@@ -41113,8 +41065,8 @@ function makeMojeek(config) {
 function searchMojeek(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query, s: "6" });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL58}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT133,
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL57}/search?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT132,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41139,7 +41091,7 @@ function parseMojeekResults(html, maxResults) {
     if (!title || !url)
       continue;
     if (url.startsWith("/"))
-      url = `${BASE_URL58}${url}`;
+      url = `${BASE_URL57}${url}`;
     pos++;
     results.push(makeSearchResult({
       title,
@@ -41155,8 +41107,8 @@ function parseMojeekResults(html, maxResults) {
 
 // src/search/engines/jisho.ts
 var API_URL37 = "https://jisho.org/api/v1/search/words";
-var BASE_URL59 = "https://jisho.org/word/";
-var USER_AGENT134 = "opencode-search/1.0";
+var BASE_URL58 = "https://jisho.org/word/";
+var USER_AGENT133 = "opencode-search/1.0";
 function makeJisho(config) {
   return {
     name: config.name,
@@ -41168,7 +41120,7 @@ function searchJisho(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ keyword: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL37}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT134,
+      "User-Agent": USER_AGENT133,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41208,7 +41160,7 @@ function parseJishoResults(raw2, maxResults) {
     const definitions = entry.senses.flatMap((s) => s.english_definitions || []).join("; ");
     if (!definitions)
       continue;
-    const url = `${BASE_URL59}${entry.slug}`;
+    const url = `${BASE_URL58}${entry.slug}`;
     pos++;
     results.push(makeSearchResult({
       title: title.slice(0, 200),
@@ -41223,8 +41175,8 @@ function parseJishoResults(raw2, maxResults) {
 }
 
 // src/search/engines/radio-browser.ts
-var API_BASE4 = "https://de1.api.radio-browser.info/json/stations";
-var USER_AGENT135 = "opencode-search/1.0";
+var API_BASE5 = "https://de1.api.radio-browser.info/json/stations";
+var USER_AGENT134 = "opencode-search/1.0";
 function makeRadioBrowser(config) {
   return {
     name: config.name,
@@ -41240,8 +41192,8 @@ function searchRadioBrowser(http, query, numResults, timeout3) {
       reverse: "true",
       limit: String(Math.min(numResults, 30))
     });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${API_BASE4}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT135,
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${API_BASE5}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT134,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41293,7 +41245,7 @@ function parseRadioBrowserResults(raw2, maxResults) {
 
 // src/search/engines/sepiasearch.ts
 var API_URL38 = "https://sepiasearch.org/api/v1/search/videos";
-var USER_AGENT136 = "opencode-search/1.0";
+var USER_AGENT135 = "opencode-search/1.0";
 function makeSepiaSearch(config) {
   return {
     name: config.name,
@@ -41310,7 +41262,7 @@ function searchSepiaSearch(http, query, numResults, timeout3) {
       sort: "-createdAt"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL38}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT136,
+      "User-Agent": USER_AGENT135,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41366,7 +41318,7 @@ function formatDuration4(seconds2) {
 }
 // src/search/engines/repology.ts
 var WEB_URL4 = "https://repology.org/projects";
-var USER_AGENT137 = "opencode-search/1.0";
+var USER_AGENT136 = "opencode-search/1.0";
 function makeRepology(config) {
   return {
     name: config.name,
@@ -41378,7 +41330,7 @@ function searchRepology(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ search: query });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${WEB_URL4}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT137,
+      "User-Agent": USER_AGENT136,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41426,7 +41378,7 @@ function parseRepologyResults(raw2, query, maxResults) {
 // src/search/engines/artic.ts
 var API_URL39 = "https://api.artic.edu/api/v1/artworks/search";
 var IMAGE_URL = "https://www.artic.edu/iiif/2";
-var USER_AGENT138 = "opencode-search/1.0";
+var USER_AGENT137 = "opencode-search/1.0";
 function makeArtic(config) {
   return {
     name: config.name,
@@ -41441,7 +41393,7 @@ function searchArtic(http, query, numResults, timeout3) {
       limit: String(Math.min(numResults, 20))
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL39}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT138,
+      "User-Agent": USER_AGENT137,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41490,7 +41442,7 @@ function parseArticResults(raw2, maxResults) {
 
 // src/search/engines/nvd.ts
 var API_URL40 = "https://nvd.nist.gov/extensions/nudp/services/json/nvd/cve/search/results";
-var USER_AGENT139 = "opencode-search/1.0";
+var USER_AGENT138 = "opencode-search/1.0";
 function makeNvd(config) {
   return {
     name: config.name,
@@ -41507,7 +41459,7 @@ function searchNvd(http, query, numResults, timeout3) {
       offset: "0"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL40}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT139,
+      "User-Agent": USER_AGENT138,
       Accept: "application/json",
       Referer: "https://nvd.nist.gov/vuln/search"
     }))).pipe(exports_Effect.timeout(timeout3));
@@ -41560,8 +41512,8 @@ function parseNvdResults(raw2, maxResults) {
 }
 
 // src/search/engines/loc.ts
-var BASE_URL60 = "https://www.loc.gov";
-var USER_AGENT140 = "opencode-search/1.0";
+var BASE_URL59 = "https://www.loc.gov";
+var USER_AGENT139 = "opencode-search/1.0";
 function makeLoc(config) {
   return {
     name: config.name,
@@ -41572,8 +41524,8 @@ function makeLoc(config) {
 function searchLoc(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const params = new URLSearchParams({ q: query, fo: "json" });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL60}/photos/?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT140,
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL59}/photos/?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT139,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41626,9 +41578,9 @@ function parseLocResults(raw2, maxResults) {
 }
 
 // src/search/engines/1x.ts
-var BASE_URL61 = "https://1x.com";
+var BASE_URL60 = "https://1x.com";
 var SEARCH_URL20 = "https://1x.com/backend/search.php";
-var USER_AGENT141 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var USER_AGENT140 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function make1x(config) {
   return {
     name: config.name,
@@ -41639,7 +41591,7 @@ function make1x(config) {
 function search1x(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SEARCH_URL20}?q=${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT141,
+      "User-Agent": USER_AGENT140,
       Accept: "text/html,application/xhtml+xml,application/xml"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41658,7 +41610,7 @@ function parse1xResults(body, maxResults) {
   while ((match6 = linkRegex.exec(body)) !== null) {
     if (results.length >= maxResults)
       break;
-    const url = `${BASE_URL61}${match6[1].trim()}`;
+    const url = `${BASE_URL60}${match6[1].trim()}`;
     const title = match6[2].replace(/<[^>]+>/g, "").trim();
     if (!title || !url)
       continue;
@@ -41677,7 +41629,7 @@ function parse1xResults(body, maxResults) {
 
 // src/search/engines/tootfinder.ts
 var API_URL41 = "https://www.tootfinder.ch/rest/api/search";
-var USER_AGENT142 = "opencode-search/1.0";
+var USER_AGENT141 = "opencode-search/1.0";
 function makeTootfinder(config) {
   return {
     name: config.name,
@@ -41688,7 +41640,7 @@ function makeTootfinder(config) {
 function searchTootfinder(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL41}/${encodeURIComponent(query)}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT142,
+      "User-Agent": USER_AGENT141,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41745,7 +41697,7 @@ function parseTootfinderResults(raw2, maxResults) {
 
 // src/search/engines/grokipedia.ts
 var API_URL42 = "https://grokipedia.com/api/full-text-search";
-var USER_AGENT143 = "opencode-search/1.0";
+var USER_AGENT142 = "opencode-search/1.0";
 function makeGrokipedia(config) {
   return {
     name: config.name,
@@ -41761,7 +41713,7 @@ function searchGrokipedia(http, query, numResults, timeout3) {
       offset: "0"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL42}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT143,
+      "User-Agent": USER_AGENT142,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41805,7 +41757,7 @@ function parseGrokipediaResults(raw2, maxResults) {
 
 // src/search/engines/findthatmeme.ts
 var API_URL43 = "https://findthatmeme.com/api/v1/search";
-var USER_AGENT144 = "opencode-search/1.0";
+var USER_AGENT143 = "opencode-search/1.0";
 function makeFindThatMeme(config) {
   return {
     name: config.name,
@@ -41817,7 +41769,7 @@ function searchFindThatMeme(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const body = JSON.stringify({ search: query, offset: 0 });
     const response = yield* http.execute(exports_HttpClientRequest.post(API_URL43).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT144,
+      "User-Agent": USER_AGENT143,
       "Content-Type": "application/json",
       Accept: "application/json"
     }), exports_HttpClientRequest.bodyText(body))).pipe(exports_Effect.timeout(timeout3));
@@ -41869,8 +41821,8 @@ function formatBytes(bytes) {
 }
 
 // src/search/engines/apkmirror.ts
-var BASE_URL62 = "https://www.apkmirror.com";
-var USER_AGENT145 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var BASE_URL61 = "https://www.apkmirror.com";
+var USER_AGENT144 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 function makeApkMirror(config) {
   return {
     name: config.name,
@@ -41885,8 +41837,8 @@ function searchApkMirror(http, query, numResults, timeout3) {
       searchtype: "apk",
       s: query
     });
-    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL62}/?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT145,
+    const response = yield* http.execute(exports_HttpClientRequest.get(`${BASE_URL61}/?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
+      "User-Agent": USER_AGENT144,
       Accept: "text/html"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41911,7 +41863,7 @@ function parseApkMirrorResults(html, maxResults) {
     if (!title || !href)
       continue;
     if (href.startsWith("/"))
-      href = `${BASE_URL62}${href}#downloads`;
+      href = `${BASE_URL61}${href}#downloads`;
     pos++;
     results.push(makeSearchResult({
       title,
@@ -41927,7 +41879,7 @@ function parseApkMirrorResults(html, maxResults) {
 
 // src/search/engines/fyyd.ts
 var API_URL44 = "https://api.fyyd.de/0.2/search/podcast";
-var USER_AGENT146 = "opencode-search/1.0";
+var USER_AGENT145 = "opencode-search/1.0";
 function makeFyyd(config) {
   return {
     name: config.name,
@@ -41943,7 +41895,7 @@ function searchFyyd(http, query, numResults, timeout3) {
       page: "0"
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${API_URL44}?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT146,
+      "User-Agent": USER_AGENT145,
       Accept: "application/json"
     }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
@@ -41991,7 +41943,7 @@ function parseFyydResults(raw2, maxResults) {
 // src/search/engines/scanr.ts
 var API_URL45 = "https://scanr.enseignementsup-recherche.gouv.fr/api/structures/search";
 var WEB_URL5 = "https://scanr.enseignementsup-recherche.gouv.fr";
-var USER_AGENT147 = "opencode-search/1.0";
+var USER_AGENT146 = "opencode-search/1.0";
 function makeScanr(config) {
   return {
     name: config.name,
@@ -42010,7 +41962,7 @@ function searchScanr(http, query, numResults, timeout3) {
       pageSize: Math.min(numResults, 20)
     });
     const response = yield* http.execute(exports_HttpClientRequest.post(API_URL45).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT147,
+      "User-Agent": USER_AGENT146,
       "Content-Type": "application/json",
       Accept: "application/json"
     }), exports_HttpClientRequest.bodyText(body))).pipe(exports_Effect.timeout(timeout3));
@@ -42055,7 +42007,7 @@ function parseScanrResults(raw2, maxResults) {
 }
 
 // src/search/engines/smzdm.ts
-var USER_AGENT148 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT147 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 var SMZDM_SEARCH_URL = "https://search.smzdm.com";
 var DDG_HTML_URL2 = "https://html.duckduckgo.com/html/";
 function makeSmzdm(config) {
@@ -42085,7 +42037,7 @@ function searchViaDdg(http, query, numResults, timeout3) {
     const scopedQuery = `site:smzdm.com ${query} 优惠`;
     const formData2 = new URLSearchParams({ q: scopedQuery, b: "", kl: "wt-wt" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL2).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT148,
+      "User-Agent": USER_AGENT147,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -42106,7 +42058,7 @@ function searchDirectSmzdm(http, query, numResults, timeout3) {
       s: query
     });
     const response = yield* http.execute(exports_HttpClientRequest.get(`${SMZDM_SEARCH_URL}/cate-home/0/0/0/0/0/0/0/0/0/0_0_0_0_0_0_0_0_0_0/0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0/0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0_0/0_0_0_?${params.toString()}`).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT148,
+      "User-Agent": USER_AGENT147,
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
       Referer: "https://www.smzdm.com/"
@@ -42202,14 +42154,14 @@ function parseSmzdmDirectResults(html, maxResults) {
 }
 
 // src/search/engines/site-search.ts
-var USER_AGENT149 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT148 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 var DDG_HTML_URL3 = "https://html.duckduckgo.com/html/";
 function searchSiteViaDdg(http, domain, query, suffix, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const scopedQuery = `site:${domain} ${query} ${suffix}`;
     const formData2 = new URLSearchParams({ q: scopedQuery, b: "", kl: "wt-wt" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL3).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT149,
+      "User-Agent": USER_AGENT148,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -42227,7 +42179,7 @@ function searchSiteViaDdgGeneric(http, domain, query, suffix, numResults, timeou
     const genericQuery = `${query} ${suffix}`;
     const formData2 = new URLSearchParams({ q: genericQuery, b: "", kl: "cn-zh" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL3).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT149,
+      "User-Agent": USER_AGENT148,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -42273,7 +42225,7 @@ function searchAltSiteOrder(http, domain, query, suffix, numResults, timeout3) {
     const altQuery = `${query} site:${domain} ${suffix}`;
     const formData2 = new URLSearchParams({ q: altQuery, b: "", kl: "wt-wt" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL3).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT149,
+      "User-Agent": USER_AGENT148,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -42342,7 +42294,7 @@ function searchJd(http, query, numResults, timeout3) {
 }
 
 // src/search/engines/taobao.ts
-var USER_AGENT150 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT149 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 var DDG_HTML_URL4 = "https://html.duckduckgo.com/html/";
 function makeTaobao(config) {
   return {
@@ -42378,7 +42330,7 @@ function searchTaobao(http, query, numResults, timeout3) {
 function fetchDdgHtml(http, formData2, timeout3) {
   return exports_Effect.gen(function* () {
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL4).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT150,
+      "User-Agent": USER_AGENT149,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -42424,7 +42376,7 @@ function parseTaobaoResults(html, maxResults) {
 }
 
 // src/search/engines/pdd.ts
-var USER_AGENT151 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT150 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 var DDG_HTML_URL5 = "https://html.duckduckgo.com/html/";
 function makePdd(config) {
   return {
@@ -42438,7 +42390,7 @@ function searchPdd(http, query, numResults, timeout3) {
     const scopedQuery = `site:pinduoduo.com OR site:yangkeduo.com ${query} 价格`;
     const formData2 = new URLSearchParams({ q: scopedQuery, b: "", kl: "wt-wt" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL5).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT151,
+      "User-Agent": USER_AGENT150,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -42486,7 +42438,7 @@ function parsePddResults(html, maxResults) {
 }
 
 // src/search/engines/amazon-cn.ts
-var USER_AGENT152 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT151 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 var DDG_HTML_URL6 = "https://html.duckduckgo.com/html/";
 function makeAmazonCn(config) {
   return {
@@ -42500,7 +42452,7 @@ function searchAmazonCn(http, query, numResults, timeout3) {
     const scopedQuery = `site:amazon.cn ${query} 价格`;
     const formData2 = new URLSearchParams({ q: scopedQuery, b: "", kl: "wt-wt" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL6).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT152,
+      "User-Agent": USER_AGENT151,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
@@ -42574,7 +42526,7 @@ function searchGome(http, query, numResults, timeout3) {
 }
 
 // src/search/engines/amazon-us.ts
-var USER_AGENT153 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+var USER_AGENT152 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 var DDG_HTML_URL7 = "https://html.duckduckgo.com/html/";
 function makeAmazonUs(config) {
   return {
@@ -42588,7 +42540,7 @@ function searchAmazonUs(http, query, numResults, timeout3) {
     const scopedQuery = `site:amazon.com ${query} -site:amazon.cn -site:amazon.de -site:amazon.co.uk -site:amazon.co.jp -site:amazon.in -site:amazon.it -site:amazon.es -site:amazon.fr -site:amazon.ca -site:amazon.com.au -site:amazon.com.br -site:amazon.com.mx`;
     const formData2 = new URLSearchParams({ q: scopedQuery, b: "", kl: "wt-wt" });
     const response = yield* http.execute(exports_HttpClientRequest.post(DDG_HTML_URL7).pipe(exports_HttpClientRequest.setHeaders({
-      "User-Agent": USER_AGENT153,
+      "User-Agent": USER_AGENT152,
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8"
@@ -42690,7 +42642,7 @@ function searchKaola(http, query, numResults, timeout3) {
 }
 
 // src/search/engines/bbc-news.ts
-var USER_AGENT154 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var USER_AGENT153 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeBbcNews(config) {
   return {
     name: config.name,
@@ -42701,7 +42653,7 @@ function makeBbcNews(config) {
 function searchBbcNews(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `https://www.bbc.co.uk/search?q=${encodeURIComponent(query)}&d=news`;
-    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT154, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
+    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT153, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
     const html = yield* response.text;
@@ -42817,7 +42769,7 @@ function parseWpResults(raw2, max4) {
 }
 
 // src/search/engines/theverge.ts
-var USER_AGENT155 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var USER_AGENT154 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeTheVerge(config) {
   return {
     name: config.name,
@@ -42828,7 +42780,7 @@ function makeTheVerge(config) {
 function searchTheVerge(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`site:theverge.com ${query}`)}`;
-    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT155, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
+    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT154, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
     const html = yield* response.text;
@@ -42855,7 +42807,7 @@ function parseDdgResults2(html, max4) {
 }
 
 // src/search/engines/arstechnica.ts
-var USER_AGENT156 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var USER_AGENT155 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeArsTechnica(config) {
   return {
     name: config.name,
@@ -42866,7 +42818,7 @@ function makeArsTechnica(config) {
 function searchArs(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(`site:arstechnica.com ${query}`)}`;
-    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT156, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
+    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT155, Accept: "text/html" }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
     const html = yield* response.text;
@@ -42893,7 +42845,7 @@ function parseDdgResults3(html, max4) {
 }
 
 // src/search/engines/yahoo-finance.ts
-var USER_AGENT157 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+var USER_AGENT156 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function makeYahooFinance(config) {
   return {
     name: config.name,
@@ -42904,7 +42856,7 @@ function makeYahooFinance(config) {
 function searchYF(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=${numResults}&newsCount=0`;
-    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT157, Accept: "application/json" }))).pipe(exports_Effect.timeout(timeout3));
+    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT156, Accept: "application/json" }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
     const raw2 = yield* response.text;
@@ -43060,7 +43012,7 @@ function parseOffResults(raw2, max4) {
 }
 
 // src/search/engines/musicbrainz.ts
-var USER_AGENT158 = "opencode-search/1.0 ( musicbrainz )";
+var USER_AGENT157 = "opencode-search/1.0 ( musicbrainz )";
 function makeMusicBrainz(config) {
   return {
     name: config.name,
@@ -43071,7 +43023,7 @@ function makeMusicBrainz(config) {
 function searchMb(http, query, numResults, timeout3) {
   return exports_Effect.gen(function* () {
     const url = `https://musicbrainz.org/ws/2/artist/?query=${encodeURIComponent(query)}&limit=${Math.min(numResults, 25)}&fmt=json`;
-    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT158, Accept: "application/json" }))).pipe(exports_Effect.timeout(timeout3));
+    const response = yield* http.execute(exports_HttpClientRequest.get(url).pipe(exports_HttpClientRequest.setHeaders({ "User-Agent": USER_AGENT157, Accept: "application/json" }))).pipe(exports_Effect.timeout(timeout3));
     if (response.status < 200 || response.status >= 400)
       return [];
     const raw2 = yield* response.text;
@@ -43780,9 +43732,9 @@ function selectEngines(flags) {
   if (isGeneral) {
     engines.push(makeZhihu(makeEngineConfig({
       name: "zhihu",
-      weight: 0.8,
+      weight: 1.1,
       timeout: exports_Duration.toMillis(exports_Duration.seconds(15)),
-      maxResults: 5,
+      maxResults: 10,
       priority: 1,
       requiresKey: false
     })));

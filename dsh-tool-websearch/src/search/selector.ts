@@ -765,13 +765,22 @@ export function selectEngines(
     })))
   }
 
-  // 知乎 — 中文问答平台（直连）
+  /*
+   * 知乎 —— 走**官方开放平台 API**（不是抓网页，见 engines/zhihu.ts 的说明）。
+   *
+   * 权重给 1.1，比一般爬取类引擎（0.8~1.0）高：
+   * 官方接口返回的是正文级内容，还带知乎自己的 RankingScore，
+   * 可靠性和质量都不是 HTML 解析能比的。
+   *
+   * maxResults 给满 10（接口上限就是 10，没有分页）。
+   * 没配 ZHIHU_ACCESS_SECRET 时这个引擎静默返回空，不影响其他引擎。
+   */
   if (isGeneral) {
     engines.push(makeZhihu(makeEngineConfig({
       name: "zhihu",
-      weight: 0.8,
+      weight: 1.1,
       timeout: Duration.toMillis(Duration.seconds(15)),
-      maxResults: 5,
+      maxResults: 10,
       priority: 1,
       requiresKey: false,
     })))

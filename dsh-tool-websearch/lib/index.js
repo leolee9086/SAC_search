@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createProgressStore } from "./progress.js";
 
 const name = "dsh-tool-websearch";
-const inject = ["tools", "webServer", "connection"];
+const inject = ["tools", "webServer", "connection", "credentials"];
 
 const BUNDLE_URL = new URL("./search.bundle.mjs", import.meta.url);
 const PROGRESS_API = "/api/dsh-websearch/progress";
@@ -89,6 +89,31 @@ const DESCRIPTION =
 function apply(ctx) {
   const progressStore = createProgressStore();
   ctx.effect(() => () => progressStore.dispose(), "dsh-tool-websearch: transient progress");
+
+  /*
+   * 把知乎开放平台的凭证（ref: ZHIHU_ACCESS_SECRET）交给搜索引擎用。
+   *
+   * 为什么由 Host 侧做这件事：凭证存在 DSH 的 credentials 服务里
+   * （落盘在 $DSH_HOME/.credentials.yaml，0600），只有持有 ctx 的 Host 半部能读；
+   * 而真正发 HTTP 请求的是 runner bundle（纯 Node，拿不到 ctx）。
+   * 所以这里解析出来塞进环境变量，bundle 那边只读环境变量 —— 两边解耦，
+   * 搜索工具也就不需要依赖 dsh-zhihu-tools 那个插件。
+   *
+   * 拿不到也不报错：知乎引擎会静默跳过。一个可选数据源不该拖垮整个搜索工具。
+   */
+  void (async () => {
+    try {
+      const credentials = ctx.get("credentials");
+      if (credentials && typeof credentials.resolve === "function") {
+        const resolved = await credentials.resolve("ZHIHU_ACCESS_SECRET");
+        if (resolved && typeof resolved.value === "string" && resolved.value.trim() !== "") {
+          process.env.ZHIHU_ACCESS_SECRET = resolved.value.trim();
+        }
+      }
+    } catch {
+      /* 可选增强：读不到就让知乎引擎自己跳过 */
+    }
+  })();
 
   const webServer = ctx.get("webServer");
   if (webServer && typeof webServer.register === "function") {
