@@ -35,8 +35,19 @@ export function normalizeUrl(url: string): string {
  * 收益不抵开销，保持原样即可。
  */
 export function unwrapRedirectUrl(url: string): string {
+  /*
+   * 先把 HTML 实体还原成真正的字符。
+   *
+   * 为什么必须做：有些引擎（实测 bing）返回的 URL 里 `&` 被转义成 `&amp;`。
+   * 而 `new URL("...&amp;u=xxx")` 解析出来的参数名是 **`amp;u`** 而不是 `u`，
+   * 于是 `searchParams.get("u")` 永远返回 null —— **解包静默失效**。
+   *
+   * 这个坑特别隐蔽：解包函数本身不报错、不抛异常，只是永远拿不到东西，
+   * 看起来"已实现"其实一条都没解开。所以这里先还原再解析。
+   */
+  const cleaned = url.replace(/&amp;/gi, "&").replace(/&#0?38;/g, "&")
   try {
-    const u = new URL(url)
+    const u = new URL(cleaned)
     const host = u.hostname.replace(/^www\./, "")
 
     // Bing: /ck/a?...&u=a1<base64>   （a1 是它加的标记，不是 base64 内容）
@@ -55,9 +66,10 @@ export function unwrapRedirectUrl(url: string): string {
       if (q !== null && /^https?:\/\//.test(q)) return q
     }
 
-    return url
+    // 没解包成功也返回还原过实体的版本 —— 至少 URL 本身是干净可用的
+    return cleaned
   } catch {
-    return url
+    return cleaned
   }
 }
 

@@ -27913,8 +27913,9 @@ function normalizeUrl(url) {
   }
 }
 function unwrapRedirectUrl(url) {
+  const cleaned = url.replace(/&amp;/gi, "&").replace(/&#0?38;/g, "&");
   try {
-    const u = new URL(url);
+    const u = new URL(cleaned);
     const host = u.hostname.replace(/^www\./, "");
     if (host === "bing.com" && u.pathname.startsWith("/ck/a")) {
       const raw2 = u.searchParams.get("u");
@@ -27930,9 +27931,9 @@ function unwrapRedirectUrl(url) {
       if (q !== null && /^https?:\/\//.test(q))
         return q;
     }
-    return url;
+    return cleaned;
   } catch {
-    return url;
+    return cleaned;
   }
 }
 function levenshtein(a, b) {
@@ -45907,10 +45908,95 @@ ${text2 || "未找到搜索结果。请尝试其他查询词。"}`;
     return;
   }).then(() => exports_Effect.runPromise(exports_Effect.provide(program, exports_FetchHttpClient.layer), signal ? { signal } : undefined));
 }
+function failedOutcome(message) {
+  return { statsLine: "", results: [], elapsedMs: 0, engineCount: 0, fromCache: false, message };
+}
+function searchDetailed(params, signal, onProgress) {
+  const query = params.query.trim();
+  if (!query)
+    return Promise.resolve(failedOutcome("查询词不能为空"));
+  const program = exports_Effect.gen(function* () {
+    const http = yield* exports_HttpClient.HttpClient;
+    const startedAt = Date.now();
+    const intent = exports_query_intent.detectQueryIntent(query);
+    const effectiveQueryType = params.queryType || intent.queryType || "general";
+    let engines = exports_selector.selectEngines({
+      queryType: effectiveQueryType,
+      timeRange: params.timeRange,
+      lang: params.lang
+    });
+    if (params.engines && params.engines.length > 0) {
+      const wanted = new Set(params.engines);
+      engines = engines.filter((e) => wanted.has(e.name));
+    }
+    if (engines.length === 0)
+      return failedOutcome("没有可用的搜索引擎。");
+    const numResults = params.numResults && params.numResults > 0 ? Math.min(params.numResults, 200) : 30;
+    const opts = exports_engine.makeSearchOptions({ numResults, timeRange: params.timeRange, lang: params.lang });
+    const weights = new Map(engines.map((e) => [e.name, e.config.weight]));
+    const cacheKey = exports_cache.ResultCache.makeKey(query, {
+      numResults,
+      timeRange: params.timeRange,
+      lang: params.lang
+    });
+    const cached3 = exports_cache.globalResultCache.get(cacheKey);
+    if (cached3 && cached3.length > 0) {
+      const { stats: funnel2 } = aggregateText(engines, cached3, query, numResults);
+      const { results: aggregated2 } = exports_aggregator.aggregate(cached3, { weights, maxResults: numResults }, query);
+      return {
+        statsLine: engineStats(engines, cached3, [], Date.now() - startedAt, funnel2),
+        results: aggregated2,
+        ...funnel2 !== undefined ? { funnel: funnel2 } : {},
+        elapsedMs: Date.now() - startedAt,
+        engineCount: engines.length,
+        fromCache: true
+      };
+    }
+    const state2 = exports_executor.getGlobalState();
+    const onEngineProgress = (info) => {
+      if (!onProgress)
+        return;
+      onProgress({
+        done: info.done,
+        total: info.total,
+        current: info.current,
+        phase: info.phase,
+        partialCount: info.partialResults.length,
+        latestResults: info.partialResults.slice(-5).reverse().map((r) => ({ title: r.title, url: r.url, engine: r.engine }))
+      });
+    };
+    const execEffect = exports_executor.executeAll(engines, http, query, opts, state2, onEngineProgress);
+    const execResult = params.maxWaitSeconds && params.maxWaitSeconds > 0 ? yield* execEffect.pipe(exports_Effect.timeout(`${params.maxWaitSeconds} seconds`)) : yield* execEffect;
+    if (!execResult) {
+      return failedOutcome(`搜索超过 ${params.maxWaitSeconds} 秒未完成（共 ${engines.length} 个引擎）。`);
+    }
+    if (execResult.results.length > 0)
+      exports_cache.globalResultCache.set(cacheKey, execResult.results);
+    const { stats: funnel } = aggregateText(engines, execResult.results, query, numResults);
+    const { results: aggregated } = exports_aggregator.aggregate(execResult.results, { weights, maxResults: numResults }, query);
+    const outcome = {
+      statsLine: engineStats(engines, execResult.results, execResult.errors, Date.now() - startedAt, funnel),
+      results: aggregated,
+      ...funnel !== undefined ? { funnel } : {},
+      elapsedMs: Date.now() - startedAt,
+      engineCount: engines.length,
+      fromCache: false
+    };
+    if (aggregated.length === 0)
+      outcome.message = "未找到搜索结果，换个查询词试试。";
+    return outcome;
+  });
+  if (signal && signal.aborted)
+    return Promise.reject(new Error("search aborted"));
+  return ensureApplied().catch(() => {
+    return;
+  }).then(() => exports_Effect.runPromise(exports_Effect.provide(program, exports_FetchHttpClient.layer), signal ? { signal } : undefined));
+}
 export {
   toggleProxy2 as toggleProxy,
   setProxyEnabled2 as setProxyEnabled,
   searchWeb,
+  searchDetailed,
   listEngines,
   getStatus,
   getProxyState2 as getProxyState,

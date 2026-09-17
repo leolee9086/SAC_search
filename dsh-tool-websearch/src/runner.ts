@@ -256,3 +256,139 @@ export function searchWeb(params: WebSearchParams, signal?: AbortSignal, onProgr
     .catch(() => undefined)
     .then(() => Effect.runPromise(Effect.provide(program, FetchHttpClient.layer), signal ? { signal } : undefined));
 }
+
+/** 结构化搜索结果（给**界面**用，不是给模型用） */
+export interface WebSearchOutcome {
+  /** 漏斗统计行，和工具返回里那一行同源 */
+  statsLine: string;
+  /** 聚合、排序后的结构化结果 */
+  results: readonly import("./search/engine").AggregatedResult[];
+  /** 漏斗数字：召回 → 去重 → 合并 → 显示 */
+  funnel?: Aggregator.AggregateStats;
+  elapsedMs: number;
+  engineCount: number;
+  /** 命中缓存 */
+  fromCache: boolean;
+  /** 失败或无结果时的可读说明；正常有结果时为 undefined */
+  message?: string;
+}
+
+function failedOutcome(message: string): WebSearchOutcome {
+  return { statsLine: "", results: [], elapsedMs: 0, engineCount: 0, fromCache: false, message };
+}
+
+/**
+ * 结构化搜索 —— 右侧栏「元搜索」页签专用。
+ *
+ * ## 为什么不复用 searchWeb
+ *
+ * `searchWeb` 返回的是**给模型看的文本**（把结果拼成 `1. 标题\n   [域名] …`），
+ * 而界面需要结构化数据才能自己排版、做筛选、做折叠、加链接。
+ * 两者消费方不同，输出形态本就不同。
+ *
+ * 流程骨架与 `searchWeb` 一致（同样的引擎选择、缓存、并发执行、聚合），
+ * 但**有意保持两条并行路径**：`searchWeb` 是工具契约，改它会波及所有调用方和
+ * 已固化的输出格式；这个函数是界面专用的新入口，出问题不影响工具那条线。
+ * 等界面稳定、两边需求收敛了再考虑合并。
+ */
+export function searchDetailed(
+  params: WebSearchParams,
+  signal?: AbortSignal,
+  onProgress?: (p: SearchProgress) => void,
+): Promise<WebSearchOutcome> {
+  const query = params.query.trim();
+  if (!query) return Promise.resolve(failedOutcome("查询词不能为空"));
+
+  const program = Effect.gen(function* () {
+    const http = yield* HttpClient.HttpClient;
+    const startedAt = Date.now();
+
+    const intent = QueryIntent.detectQueryIntent(query);
+    const effectiveQueryType = params.queryType || intent.queryType || "general";
+
+    let engines = Selector.selectEngines({
+      queryType: effectiveQueryType,
+      timeRange: params.timeRange,
+      lang: params.lang,
+    });
+    if (params.engines && params.engines.length > 0) {
+      const wanted = new Set(params.engines);
+      engines = engines.filter((e) => wanted.has(e.name));
+    }
+    if (engines.length === 0) return failedOutcome("没有可用的搜索引擎。");
+
+    const numResults = params.numResults && params.numResults > 0
+      ? Math.min(params.numResults, 200)
+      : 30;
+    const opts = Engine.makeSearchOptions({ numResults, timeRange: params.timeRange, lang: params.lang });
+    const weights = new Map(engines.map((e) => [e.name, e.config.weight]));
+
+    const cacheKey = Cache.ResultCache.makeKey(query, {
+      numResults,
+      timeRange: params.timeRange,
+      lang: params.lang,
+    });
+    const cached = Cache.globalResultCache.get(cacheKey);
+    if (cached && cached.length > 0) {
+      const { stats: funnel } = aggregateText(engines, cached, query, numResults);
+      const { results: aggregated } = Aggregator.aggregate(cached, { weights, maxResults: numResults }, query);
+      return {
+        statsLine: engineStats(engines, cached, [], Date.now() - startedAt, funnel),
+        results: aggregated,
+        ...(funnel !== undefined ? { funnel } : {}),
+        elapsedMs: Date.now() - startedAt,
+        engineCount: engines.length,
+        fromCache: true,
+      };
+    }
+
+    const state = Executor.getGlobalState();
+    const onEngineProgress: import("./search/executor").ProgressCallback = (info) => {
+      if (!onProgress) return;
+      onProgress({
+        done: info.done,
+        total: info.total,
+        current: info.current,
+        phase: info.phase,
+        partialCount: info.partialResults.length,
+        latestResults: info.partialResults
+          .slice(-5)
+          .reverse()
+          .map((r) => ({ title: r.title, url: r.url, engine: r.engine })),
+      });
+    };
+
+    const execEffect = Executor.executeAll(engines, http, query, opts, state, onEngineProgress);
+    const execResult =
+      params.maxWaitSeconds && params.maxWaitSeconds > 0
+        ? yield* execEffect.pipe(Effect.timeout(`${params.maxWaitSeconds} seconds`))
+        : yield* execEffect;
+    if (!execResult) {
+      return failedOutcome(`搜索超过 ${params.maxWaitSeconds} 秒未完成（共 ${engines.length} 个引擎）。`);
+    }
+
+    if (execResult.results.length > 0) Cache.globalResultCache.set(cacheKey, execResult.results);
+
+    const { stats: funnel } = aggregateText(engines, execResult.results, query, numResults);
+    const { results: aggregated } = Aggregator.aggregate(
+      execResult.results,
+      { weights, maxResults: numResults },
+      query,
+    );
+    const outcome: WebSearchOutcome = {
+      statsLine: engineStats(engines, execResult.results, execResult.errors, Date.now() - startedAt, funnel),
+      results: aggregated,
+      ...(funnel !== undefined ? { funnel } : {}),
+      elapsedMs: Date.now() - startedAt,
+      engineCount: engines.length,
+      fromCache: false,
+    };
+    if (aggregated.length === 0) outcome.message = "未找到搜索结果，换个查询词试试。";
+    return outcome;
+  });
+
+  if (signal && signal.aborted) return Promise.reject(new Error("search aborted"));
+  return Proxy.ensureApplied()
+    .catch(() => undefined)
+    .then(() => Effect.runPromise(Effect.provide(program, FetchHttpClient.layer), signal ? { signal } : undefined));
+}
