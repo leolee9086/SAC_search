@@ -7,8 +7,28 @@ const source = await readFile(new URL("../lib/client.js", import.meta.url), "utf
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const preview = (title) => ({ done: 1, total: 2, current: "mock", partialCount: 1, latestResults: [{ title, engine: "mock" }] });
 
-// Drive the shipped module's component with controlled hooks, fetch and timers.
-// No browser, DOM, server, or installed React dependency is required.
+/*
+ * 用一套**手写替身**（极简 React hook 运行时 + 可控的 fetch 与定时器）驱动发货版的
+ * client.js。
+ *
+ * 为什么不用真实实现 —— 不是"真实环境慢"，而是**这个文件要断言的是"交错顺序"，
+ * 而那个顺序必须由测试自己编排**：
+ *
+ * 1. **陈旧响应**：切到别的 callId 之后，**上一次请求的响应这时才到达**，不能再被渲染。
+ *    要构造这一幕，测试必须能让"响应在最不该回来的那一刻回来"。
+ * 2. **重试不重叠**：瞬时失败要重试，但**不能两个请求同时在飞** ——
+ *    这要求测试能精确停在"第一个已结束、第二个还没发"的那一点。
+ * 3. **卸载后不再请求**：组件 cleanup 之后，任何在途响应都不能再触发新请求。
+ * 4. **轮询节奏**：间隔与停止条件。真实定时器只能"等它到点"，没法停在
+ *    "第一次 tick 之后、第二次之前"去观察中间状态。
+ *
+ * 真实 React 加真实网络下，上面这些时刻由框架和网络决定，测试无从安排 ——
+ * 那是**可观测量构造不出来**，不是速度问题。
+ * 这条路径还额外说明了一件事：组件本身是"纯 props → 树"的函数，不碰 DOM，
+ * 所以不需要浏览器环境就能驱动它。
+ *
+ * 真实网络那一侧的验证由 `pnpm run test:e2e` 负责（那边一条 mock 都没有）。
+ */
 function fixture() {
   const states = [];
   const effects = [];

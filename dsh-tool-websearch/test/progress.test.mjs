@@ -14,7 +14,22 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import { createProgressStore } from "../lib/progress.js";
 
-// Replace the entire bundle before loading the host: no proxy probing or network.
+/*
+ * 用 mock.module 把整个搜索 bundle 换掉。
+ *
+ * 为什么**不能**跑真实搜索：这个文件测的是**进度机制的时序契约**，
+ * 而每一条契约都要求"结果何时返回、进度何时上报"由测试说了算：
+ *
+ * 1. **搜索还没返回时，进度必须已经可读** —— 得先让搜索挂起，再去读进度路由。
+ * 2. **迟到的进度回调必须被忽略** —— 得构造"结果已经返回之后，
+ *    同一次调用的进度才到达"这一幕。
+ * 3. **相同 callId 跨会话隔离** —— 得让两个会话的搜索**同时挂起**，
+ *    再按测试指定的顺序释放。
+ * 4. **disposal 之后不得再写入** —— 得在搜索还挂着的时候把插件卸载掉。
+ *
+ * 真实搜索里这些时刻全由网络决定，测试**安排不了** —— 不是慢，是构造不出来。
+ * 真实网络与真实引擎那一侧的验证由 `pnpm run test:e2e` 负责（那边一条 mock 都没有）。
+ */
 let runSearch;
 let proxyReads = 0;
 mock.module(new URL("../lib/search.bundle.mjs", import.meta.url).href, {
@@ -37,6 +52,17 @@ const progress = (title = "preview") => ({
   latestResults: [{ title, url: "https://example.test/", engine: "mock" }],
 });
 
+/*
+ * 这个 fixture 用替身提供 connection / webServer / credentials 三个服务。
+ *
+ * 为什么不用真实实现：本文件测的是**插件自己那几个路由 handler 的输入输出契约** ——
+ * 状态码、响应体、以及"鉴权先于读取"的顺序。真实 HTTP 服务器会引入端口、
+ * 生命周期、并发这些**与契约无关**的变量，掺进来只会让失败更难归因。
+ *
+ * 更要紧的一点：`connection.requestRejection` 属于 DSH 的鉴权实现，
+ * 本插件只是**消费**它。若测试去启真实鉴权，那测的是 DSH 而不是这个插件；
+ * 用替身才能把"插件在各种鉴权返回值下该怎么做"变成**可枚举的输入**。
+ */
 function fixture() {
   const routes = new Map();
   const tools = new Map();
