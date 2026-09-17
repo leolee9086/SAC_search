@@ -36,6 +36,15 @@ export function normalizeUrl(url: string): string {
  */
 export function unwrapRedirectUrl(url: string): string {
   /*
+   * 运行时保护：url 可能真的是 undefined。
+   *
+   * `url: string` 只是 TypeScript 的承诺，而**引擎解析出来的数据不受它约束**。
+   * 实测复现过：某个引擎返回了一条没有 url 的结果，而下面那行 `.replace()`
+   * 原本写在 `try` **外面**，于是**一条脏数据就让整次聚合抛错** ——
+   * 页签里看到的就是 `Cannot read properties of undefined (reading 'replace')`。
+   */
+  if (typeof url !== "string") return url
+  /*
    * 先把 HTML 实体还原成真正的字符。
    *
    * 为什么必须做：有些引擎（实测 bing）返回的 URL 里 `&` 被转义成 `&amp;`。
@@ -371,13 +380,32 @@ export function aggregate(
     }
   }
 
-  // 阶段 0: 还原跳转链接。**必须在去重之前** ——
-  // 同一页面经不同引擎的跳转链接外层各不相同，不还原就会被当成两条独立结果，
-  // "多引擎共识"这个最重要的排序信号就稀释了。
-  const resolved: SearchResult[] = allResults.map((r) => {
+  /*
+   * 阶段 0: 还原跳转链接，并丢掉**没有 URL** 的结果。必须在去重之前 ——
+   * 同一页面经不同引擎的跳转链接外层各不相同，不还原就会被当成两条独立结果，
+   * "多引擎共识"这个最重要的排序信号就稀释了。
+   *
+   * 为什么这里要显式过滤：`SearchResult.url` 的类型是 string，但那是**我们的**承诺，
+   * 而引擎解析出来的数据不受它约束 —— 实测出现过 url 为 undefined 的条目
+   * （页签里报 `Cannot read properties of undefined (reading 'replace')`）。
+   * URL 既是去重键也是结果的核心字段，没有它的条目留着毫无意义，
+   * 只会在下游各处逼着每个函数都做防御。**在入口挡掉比到处打补丁干净。**
+   */
+  const resolved: SearchResult[] = []
+  for (const r of allResults) {
+    if (typeof r.url !== "string" || r.url === "") {
+      // 报出**是谁**吐了脏数据 —— 不然只能在这一层一直挡，修不到源头。
+      // 只在 DEBUG 下打，且走 stderr，不污染返回给模型的结果文本。
+      if (process.env.DSH_WEBSEARCH_DEBUG === "1") {
+        process.stderr.write(
+          `[websearch] 丢弃无 URL 的结果: engine=${String(r.engine)} title=${JSON.stringify(r.title)}\n`,
+        )
+      }
+      continue
+    }
     const unwrapped = unwrapRedirectUrl(r.url)
-    return unwrapped === r.url ? r : { ...r, url: unwrapped }
-  })
+    resolved.push(unwrapped === r.url ? r : { ...r, url: unwrapped })
+  }
 
   // 阶段 1: URL 去重
   const urlMap = new Map<string, SearchResult[]>()

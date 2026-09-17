@@ -27913,6 +27913,8 @@ function normalizeUrl(url) {
   }
 }
 function unwrapRedirectUrl(url) {
+  if (typeof url !== "string")
+    return url;
   const cleaned = url.replace(/&amp;/gi, "&").replace(/&#0?38;/g, "&");
   try {
     const u = new URL(cleaned);
@@ -28051,10 +28053,18 @@ function aggregate(allResults, ctx, query) {
       }
     }
   }
-  const resolved = allResults.map((r) => {
+  const resolved = [];
+  for (const r of allResults) {
+    if (typeof r.url !== "string" || r.url === "") {
+      if (process.env.DSH_WEBSEARCH_DEBUG === "1") {
+        process.stderr.write(`[websearch] 丢弃无 URL 的结果: engine=${String(r.engine)} title=${JSON.stringify(r.title)}
+`);
+      }
+      continue;
+    }
     const unwrapped = unwrapRedirectUrl(r.url);
-    return unwrapped === r.url ? r : { ...r, url: unwrapped };
-  });
+    resolved.push(unwrapped === r.url ? r : { ...r, url: unwrapped });
+  }
   const urlMap = new Map;
   for (const r of resolved) {
     const key = normalizeUrl(r.url);
