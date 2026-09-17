@@ -38,6 +38,7 @@
   "scripts": {
     "build": "bun build src/runner.ts --target=node --format=esm --outfile=lib/search.bundle.mjs",
     "test": "node --experimental-test-module-mocks --test test/*.test.mjs",
+    "test:e2e": "node test/e2e-search.mjs",
     "check": "node --check lib/index.js && node --check lib/progress.js && node --check lib/client.js",
     "prepack": "pnpm run test && pnpm run build"
   },
