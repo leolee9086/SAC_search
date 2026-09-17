@@ -193,7 +193,31 @@ Get-NetTCPConnection -LocalPort 9223 -State Listen | Select-Object -Unique Ownin
   ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 ```
 
-# 回归自检（本轮改动后，`0e61de6`）
+# 代码自审（提交后、等验证时做的）
+
+在等哥刷新的时候，把实现对着 DSH 本体的契约逐条核了一遍。
+
+| 检查项 | 结果 |
+|---|---|
+| 服务名 `sidebarRight` / `sidebarRightTabs` | ✓ 本体：`ctx.reflect.provide('sidebarRight', controller)` / `provide('sidebarRightTabs', tabs)` |
+| `openTab(kind)` / `isExpanded()` | ✓ 都在 `SidebarRightController` 上 |
+| 三个插槽名 | ✓ 与 `ui-sidebar-right` 自己的声明一致（`sidebar.right.pane.tab` / `.title` 都是 `kind: 'keyed', scope: 'session'`） |
+| `ctx.effect(() => registry.register(...))` 的写法 | ✓ 内置实例 `ui-sidebar-files` **和本体自带的 guide 页签**都是这么写的 |
+| `kind` / `id` 唯一性 | ✓ 都带 `dsh-tool-websearch:` 前缀（重复会抛：`kind "..." is already registered`） |
+| `locale` 字段 | **故意不传**：契约里 title 插槽本就可省略（不注册时 chip 用 registry 的 `title(address)`，我们已经给了 `title: () => "元搜索"`）；而 `locale` 是给**注册了字典**的插件绑定命名空间的，我们没注册字典，传了反而错 |
+| `priority` | 不写 → 落在 `extension` 档（规程如此） |
+
+## 一个值得记的警告（读本体时看到的）
+
+`ui-sidebar-right` 的注释写着：**registry 的宿主不能是 effect 内部的作用域**，
+否则"从另一个插件的 apply 里注册时会**静默卡住浏览器启动，连错误都没有**"。
+
+这是**提供 registry 的一方**（本体自己）必须遵守的约束 —— 它在 apply 顶层建 registry；
+而**调用方**按 `ctx.effect(() => register(...))` 写是标准做法（内置实例就是这么做的）。
+两件事很容易混，所以记下来：看到那句话不要以为自己写错了。
+
+
+# 回归自检（本轮改动后，提交 `0e61de6`）
 
 改完跑完整回归，**抓出并修掉了一处我自己造成的回归**：
 
