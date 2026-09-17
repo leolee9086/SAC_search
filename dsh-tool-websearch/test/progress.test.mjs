@@ -41,6 +41,12 @@ function fixture() {
         return () => routes.delete(route.path);
       },
     },
+    /*
+     * apply 会读它来把知乎开放平台的凭证注入环境变量（ref: ZHIHU_ACCESS_SECRET）。
+     * 这个测试只关心进度路由，所以给个最小实现 —— 但**必须存在**，
+     * 因为这个 fixture 的 ctx.get 对未声明的服务是直接断言失败的。
+     */
+    credentials: { async resolve() { return undefined; } },
   };
   apply({
     get(name) {
@@ -88,7 +94,8 @@ function pausedSearch() {
 }
 
 test("running searches isolate identical call ids by session and preserve final tool output without appends", async () => {
-  assert.deepEqual(inject, ["tools", "webServer", "connection"]);
+  // credentials 是本轮为知乎开放平台凭证加的（Host 侧解析 ref 后注入环境变量）
+  assert.deepEqual(inject, ["tools", "webServer", "connection", "credentials"]);
   const f = fixture();
   const calls = pausedSearch();
   const a = execution("A");

@@ -46,10 +46,27 @@ function fixture() {
       return new Promise((resolve, reject) => requests.push({ url, options, resolve, reject }));
     },
   });
-  plugin.apply({ slots: {
-    inject(_name, factory) { return factory(); },
-    register(options, component) { if (options.key === "web_search_meta") view = component; return () => {}; },
-  } });
+  plugin.apply({
+    effect(fn) {
+      const dispose = fn();
+      return typeof dispose === "function" ? dispose : () => {};
+    },
+    slots: {
+      inject(_name, factory) { return factory(); },
+      register(options, component) { if (options.key === "web_search_meta") view = component; return () => {}; },
+    },
+    /*
+     * 页签那三个服务的**最小 mock**。
+     *
+     * client.js 的 inject 里声明了它们，真实环境由 Cordis 保证存在（声明了就等于有）；
+     * 但这里的 ctx 是手写的，不补就会在 apply 里读到 undefined 然后抛错 ——
+     * 这正是这个测试在本轮改动后挂掉的原因。
+     * 本文件只测工具卡，所以这些 mock 什么都不用做，能拿到方法就行。
+     */
+    sidebarRightTabs: { register() { return () => {}; } },
+    sidebarRight: { openTab() {}, isExpanded() { return true; } },
+    layout: { openRightbar() {} },
+  });
   return {
     requests, timers,
     render(props) {
