@@ -217,6 +217,56 @@ Get-NetTCPConnection -LocalPort 9223 -State Listen | Select-Object -Unique Ownin
 两件事很容易混，所以记下来：看到那句话不要以为自己写错了。
 
 
+# 第二轮真机验证：脏数据 + 我自己引入的回归（2026-09-17）
+
+## 现象
+
+哥刷新后：页签能开、界面正常（**缓存修复生效了**，不再报"bundle 过旧"），
+但一搜索报 `Cannot read properties of undefined (reading 'replace')`。
+
+## 根因链（三层，都值得记）
+
+### 第一层：源头是 wiby 引擎吐脏数据
+
+用同一查询直接调 `searchDetailed`，堆栈直接指到 `unwrapRedirectUrl` 里的
+`url.replace(/&amp;/gi, "&")` —— **那行原本写在 `try` 外面**，而 `url` 运行时是 undefined。
+
+新加的诊断当场指认：**wiby 返回了 8 条既没有 url、也没有 title 的结果**。
+（`SearchResult.url` 的类型是 string，但那是**我们自己的**承诺，
+引擎解析出来的数据不受它约束。）
+
+### 第二层：三道防线（从源头到入口）
+
+1. `unwrapRedirectUrl` 加运行时保护（非字符串原样返回）—— 函数自身的健壮性。
+2. **`aggregate` 阶段 0 显式过滤没有 URL 的结果** —— URL 既是去重键、也是结果的核心字段，
+   没有它的条目留着毫无意义，**在入口挡掉比逼着下游每个函数都写防御干净**。
+3. **`makeJsonApiEngine` 统一校验** —— wiby 的 parse 直接 `slice(0, max).map(...)` 就交上来了；
+   校验加在工厂层一次覆盖所有走这个工厂的引擎，而且那里正是"外部数据刚进来"的边界。
+
+顺带加了一行诊断（仅 `DSH_WEBSEARCH_DEBUG=1`、走 stderr），报出是**哪个引擎**吐的脏数据 ——
+不然只能在这一层一直挡，永远修不到源头。**这行诊断就是这次能立刻定位的关键。**
+
+### 第三层：我自己引入的回归 —— mtime 说明符弄坏了测试 mock
+
+`pnpm test` 变成 5 pass / 1 fail / 3 cancelled，而且耗时 **15 秒 + 78 秒**
+（说明它在跑**真实搜索**）。
+
+原因：`test/progress.test.mjs` 用 `mock.module(<bundle 的裸 URL>, ...)` 拦截模块，
+而 **mock 是按说明符匹配的** —— 我给 import 加上了 `?v=<mtime>`，key 就对不上，
+mock **静默失效**，断言只在报错里说"搜索先于进度返回"，
+**完全看不出是 mock 没生效**（这正是最坑的地方）。
+
+修法：`bundleSpecifier()` 支持 `DSH_WEBSEARCH_PLAIN_BUNDLE=1` 时返回裸 URL；
+测试文件在加载 `lib/index.js` 之前设上它。
+
+**验证：9/9 全过、总耗时 1 秒** —— 秒回本身就证明 mock 生效了。
+
+## 教训（本轮最值钱的一条）
+
+**改 import 的说明符，要检查所有按说明符匹配的东西**：
+模块 mock、缓存键、产物映射。这次只想着"清缓存"，
+忘了 **mock 也是按说明符认的** —— 而且失效时是**静默**的，不报错、只报无关的断言失败。
+
 # 首次真机验证（哥刷新后，2026-09-17）
 
 **页签成功了** —— 哥发来的截图里，侧栏底部出现了「🔎 元搜索」；
