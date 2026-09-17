@@ -11,6 +11,7 @@ const inject = ["tools", "webServer", "connection", "credentials"];
 const BUNDLE_URL = new URL("./search.bundle.mjs", import.meta.url);
 const PROGRESS_API = "/api/dsh-websearch/progress";
 const PROXY_API_BASE = "/api/dsh-websearch/proxy";
+const SEARCH_API = "/api/dsh-websearch/search";
 
 // 工具定义的纯对象形态(parameters 已是 JSON Schema),与 dsh-tool-restart 同构。
 function toolDef(toolName, description, parameters, execute, presentCall) {
@@ -196,6 +197,79 @@ function apply(ctx) {
         }
       },
     }), "dsh-tool-websearch: proxy api routes");
+
+    /*
+     * 「元搜索」页签用的搜索接口。
+     *
+     * 为什么需要一条 HTTP 路由：浏览器半部**不能直接调工具** —— 工具是模型侧的
+     * 调用通道，插件自己的界面拿不到。所以页签里的搜索走这里。
+     *
+     * 它调的是 bundle 的 `searchDetailed`（返回**结构化**结果），
+     * 而不是工具用的 `searchWeb`（返回给模型看的文本）——
+     * 界面需要结构化数据才能自己排版、折叠、加链接。
+     */
+    ctx.effect(() => webServer.register({
+      kind: "exact",
+      path: SEARCH_API,
+      handler: async (req, res) => {
+        try {
+          if (rejected(req, res)) return;
+          const method = (req.method || "GET").toUpperCase();
+          if (method !== "GET" && method !== "POST") {
+            res.writeHead(405, { Allow: "GET, POST", "Cache-Control": "no-store" });
+            res.end();
+            return;
+          }
+
+          let query = "";
+          let numResults;
+          let queryType;
+          if (method === "GET") {
+            const url = new URL(req.url || "/", "http://localhost");
+            query = url.searchParams.get("q") || "";
+            const n = Number.parseInt(url.searchParams.get("num") || "", 10);
+            if (Number.isFinite(n) && n > 0) numResults = Math.min(n, 200);
+            const t = url.searchParams.get("type");
+            if (t) queryType = t;
+          } else {
+            let body = "";
+            for await (const chunk of req) {
+              body += chunk;
+              if (body.length > 8192) {
+                json(res, 413, { error: "request body too large" });
+                return;
+              }
+            }
+            const parsed = JSON.parse(body || "{}");
+            query = typeof parsed.query === "string" ? parsed.query : "";
+            if (typeof parsed.numResults === "number" && parsed.numResults > 0) {
+              numResults = Math.min(parsed.numResults, 200);
+            }
+            if (typeof parsed.queryType === "string" && parsed.queryType) queryType = parsed.queryType;
+          }
+
+          if (!query.trim()) {
+            json(res, 400, { error: "查询词不能为空" });
+            return;
+          }
+
+          const { searchDetailed } = await import("./search.bundle.mjs");
+          if (typeof searchDetailed !== "function") {
+            // bundle 是构建产物，版本不匹配时说清楚怎么办，而不是抛一个看不懂的错
+            json(res, 503, { error: "bundle 过旧，缺少 searchDetailed。请在插件目录运行 bun run build 后重载插件。" });
+            return;
+          }
+          const outcome = await searchDetailed({
+            query,
+            ...(numResults !== undefined ? { numResults } : {}),
+            ...(queryType !== undefined ? { queryType } : {}),
+          });
+          json(res, 200, outcome);
+        } catch (error) {
+          json(res, 500, { error: error && error.message ? error.message : String(error) });
+        }
+      },
+    }), "dsh-tool-websearch: ui search api route");
   }
 
   // Proxy initialization is non-critical; each search still reports its own request errors.
