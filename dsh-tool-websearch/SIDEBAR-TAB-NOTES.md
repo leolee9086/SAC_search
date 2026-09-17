@@ -193,4 +193,27 @@ Get-NetTCPConnection -LocalPort 9223 -State Listen | Select-Object -Unique Ownin
   ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 ```
 
+# 回归自检（本轮改动后，`0e61de6`）
+
+改完跑完整回归，**抓出并修掉了一处我自己造成的回归**：
+
+`pnpm test` 从 9/9 掉到 **4 pass / 5 fail** —— 5 个失败全在客户端结果卡的测试上。两处原因：
+
+1. `test/client-progress.test.mjs` 里的 ctx 是**手写 mock**，只有 `slots` 和 `effect`；
+   而 `client.js` 的 inject 已从 `["slots"]` 扩成四个服务 →
+   `apply` 一读 `ctx.sidebarRightTabs.register` 就抛。
+2. `test/progress.test.mjs` 的 fixture 里 `ctx.get` 对**未声明的服务直接断言失败**，
+   而 `apply` 新增了 `ctx.get("credentials")`（读知乎凭证）。
+
+补完 mock 后恢复 **9/9 全绿**。
+
+**教训：手写的 mock ctx 是一份隐式契约** —— 插件多 inject 一个服务，
+所有手写 ctx 的测试会一起断，而报错信息（`unexpected service`）本身
+不会告诉你该补什么。所以补 mock 时都写了注释说明"为什么它必须存在"。
+
+端到端也复查了三个目标查询，都正常：54 个引擎、4~6 秒、有结果；
+其中「设计师兼程序员怎么赚钱」召回 22 → 去重 20，
+说明 URL 解包（含 `&amp;` 修复）确实在起作用。
+
+
 
