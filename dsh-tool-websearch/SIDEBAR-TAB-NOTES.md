@@ -1,8 +1,8 @@
 # 右侧栏页签：怎么加（调研记录）
 
 > 目标：给 `dsh-tool-websearch` 做一个「元搜索引擎」页签，显示在右侧边栏，给哥用。
-> 本文是**调研结果**，还没动任何代码。
 > 调研日期：2026-09-17
+> **状态：已实现，已提交 `ddd0961`；生效方式与未验证点见文末「实现记录」。**
 
 ## 一、权威依据
 
@@ -107,3 +107,56 @@ if (ctx.sidebarRight.isExpanded() !== true) ctx.layout.openRightbar(false, false
 1. **页签里放什么**：只是搜索框 + 结果列表？还是带引擎选择、过滤条件（时间/类型）？
 2. **要不要走 MCP/工具那条路**：搜索结果是否要同时写进会话（供模型看见），还是纯粹的 UI 面板？
 3. **触发按钮的位置**：`order` 给多少（官方 `cordis-panel` 已占一格，我们别挤它）。
+
+---
+
+# 实现记录（2026-09-17）
+
+## 设计取值（我按自己的方案做了第一版，等哥看完再改）
+
+1. 页签内容：**搜索框 + 漏斗统计行 + 结果列表**（标题/域名/来源引擎/日期/摘要，标题新标签打开）
+2. **纯 UI 面板**，搜索结果**不写进会话**（不干扰对话）
+3. 触发按钮 `order: 60`，id `websearch-meta-entry`（不碰官方的 `cordis-panel`）
+
+## 改了什么
+
+**Host 侧 `lib/index.js`**
+- 新增常量 `SEARCH_API = "/api/dsh-websearch/search"`
+- 在 apply 里注册 GET/POST 路由（紧接 proxy 路由之后）
+- 它调 `searchDetailed`（bundle 的新导出，返回结构化结果），
+  不是工具用的 `searchWeb`（返回给模型看的文本）
+- bundle 过旧（没有 searchDetailed）时返回 503 并说明怎么修
+
+**bundle 侧 `src/runner.ts`**（随 `2c12a92` 提交）
+- 新增导出 `searchDetailed(params, signal?, onProgress?)` → `WebSearchOutcome`
+  （`statsLine` / `results` / `funnel` / `elapsedMs` / `engineCount` / `fromCache` / `message?`）
+- **`searchWeb` 一行未动** —— 工具契约那条路径保持稳定，两条路径有意并行
+
+**Client 侧 `lib/client.js`**（587 行）
+- `inject` 扩为 `["slots", "sidebarRightTabs", "sidebarRight", "layout"]`
+- 新增 `MS` 样式对象、`MetaSearchBody`、`MetaSearchTitle`、`makeMetaSearchOpener(ctx)`
+  - 触发按钮用**工厂函数**把 `ctx` 闭包进来（组件本身拿不到 ctx，而 openTab 在 ctx 上）
+- apply 里加三步注册，每步都包 `ctx.effect()`
+
+## 生效方式（依据：技能《改完生效与验证》）
+
+- 插件是以 `file:///D:/dev/SAC_search/dsh-tool-websearch/lib/index.js?progress=memory-v1`
+  形式挂在 `~/.dsh/profiles/web/cordis.patch.yml` 第 36-37 行 —— **查询串是 HMR 版本标记**。
+- 已改成 `?progress=memory-v1&ui=meta-tab-1` 触发重载；
+  备份 `cordis.patch.yml.before-metatab-20260917-134444.bak`。
+- Client 半部改完**刷新页面**即可（开发模式下前端不重启）。
+
+## 还没验证的部分（要刷新页面才能看）
+
+**HTTP 层验证不了**：鉴权（`connection.requestRejection`）发生在**路由匹配之前**，
+实测 `proxy` / `search` / `nonexistent-xyz` 三个路径**全是 401** ——
+所以"非 404 即存在"这个办法在这里不成立。
+
+已自证的部分：两侧语法检查通过；`searchDetailed` 单独调用正常
+（返回 `statsLine, results, funnel, elapsedMs, engineCount, fromCache`，结果条数正确）；
+注册点齐全（`sidebarRightTabs.register` / 两个 keyed 插槽 / `sidebar.footer.action` / `openTab`）。
+
+**待哥刷新页面确认**：侧栏底部是否出现「🔎 元搜索」入口、点开是否打开搜索页签、
+搜一个词是否有结果。若没出现，先怀疑 Host 那行 HMR 没重载
+（可以再改一次查询串，或重启 Harness）。
+
