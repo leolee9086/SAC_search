@@ -1,0 +1,56 @@
+{
+  "name": "dsh-better-session-query",
+  "version": "0.1.0",
+  "description": "DSH 插件：给会话历史再挂一套块级并行索引——一条消息拆成 text/reasoning/tool-call/tool-result 等块，块是索引行，可按块检索与读取。不替换官方 session-query，不改任何 DSH 源码。",
+  "author": "leolee9086",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leolee9086/SAC_search.git",
+    "directory": "dsh-better-session-query"
+  },
+  "homepage": "https://github.com/leolee9086/SAC_search#readme",
+  "bugs": {
+    "url": "https://github.com/leolee9086/SAC_search/issues"
+  },
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "cordis",
+    "session",
+    "search",
+    "fts5",
+    "block"
+  ],
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "bench": "node bench/write-bench.mjs",
+    "bench:search": "node bench/search-bench.mjs",
+    "check": "node --check lib/index.js && node --check lib/blocks.js && node --check lib/store.js && node --check lib/indexer.js && node --check lib/runner.js && node --check lib/monitor.js && node --check lib/memory.js && node --check lib/client.js"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "dependencies": {}
+}

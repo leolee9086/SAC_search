@@ -1,0 +1,12 @@
+# dsh-better-session-query：会话历史的块级并行索引（宿主数据面 + 原生右侧栏监控页签）。
+#
+# 它不替换任何行：官方的 session-query-sqlite 该怎样还怎样，本插件只是它的消费者
+# （用 ctx.sessionQuery 读会话），另建一套块级索引并注册自己的服务 sessionBlockQuery。
+- insert:
+    - id: dsh-better-session-query
+      name: dsh-better-session-query
+      config:
+        # path 留空 = <DSH_HOME>/session-blocks.db
+        # 索引更新一律后台渐进(检索永不等待);失败原因落 <DSH_HOME>/logs/session-blocks.log
+        # 启用后台对账即在加载时开库并把定时器接上——不等"有人碰一下",否则每次重启都停在原地。
+        # 想关掉后台工作 = backgroundReconcileMs: 0;想整个停用 = 在 profile 里禁用这一行。
