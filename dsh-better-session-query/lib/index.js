@@ -876,13 +876,15 @@ async function apply(ctx, rawConfig = {}) {
   async function monitorSnapshot() {
     const base = { progress: state.runner?.progress(), last: state.lastSummary, config: publicConfig(), paused: state.paused };
     const opened = await ensureOpen();
+    // size() 只算一次,再喂给 shouldCompact —— 它以前自己又算了一遍,而那一遍是全文扫描。
+    const size = opened.store.size();
     return buildMonitorPayload({
       ...base,
       stats: opened.store.stats(),
-      size: opened.store.size(),
+      size,
       listed: await countListedSessions(),
       walBytes: fileBytes(`${config.path}-wal`),
-      needsCompact: opened.store.shouldCompact(),
+      needsCompact: opened.store.shouldCompact(size),
     });
   }
 
@@ -930,7 +932,9 @@ async function apply(ctx, rawConfig = {}) {
     try {
       state.runner?.stop();
       // 卸载时只做便宜的 FTS 段合并(不 VACUUM:关库路径不该背一次独占+临时空间的开销)。
-      if (state.store?.shouldCompact?.() === true) state.store.compact({ vacuum: false });
+      // 关库路径要的是"现在真实多少字节",所以显式绕缓存。
+      const size = state.store?.size?.({ fresh: true });
+      if (size !== undefined && state.store.shouldCompact(size) === true) state.store.compact({ vacuum: false });
       state.store?.close();
       state.memory?.close();
     } catch {

@@ -283,6 +283,21 @@ export function buildPredicates(filter = {}) {
 }
 
 function createStore(db, path) {
+  /**
+   * `size()` 的结果缓存。
+   *
+   * 为什么必须缓存:`size()` 里有两条随正文总量线性增长的全表扫描
+   * (`COUNT(*) FROM block_fts` 遍历整个 FTS5 倒排;`SUM(LENGTH(CAST(text AS BLOB)))`
+   * 把正文整份读出来量一遍),实测对当前这个库单次约 1.3 秒。
+   * 而它算的全是**慢变量** —— 库体积、表行数、正文总字节,一秒内不可能有意义地变化,
+   * 面板却是每秒问一次。缓存不改变任何判断,只是不再重复问同一个问题。
+   *
+   * 写入路径不必失效它:这些数字本来就是"最近一次观测",不是精确到毫秒的事实。
+   * 需要精确值的地方(收缩前后对比)显式传 `{ fresh: true }`。
+   */
+  let sizeCache = { value: undefined, at: 0 };
+  /** 缓存时长:比面板轮询间隔长得多,又短到用户手动触发收缩后能立刻看到新数字。 */
+  const SIZE_CACHE_MS = 30000;
   const insertMeta = db.prepare(`
     INSERT INTO block_meta (block_id, fts_rowid, session_id, cwd, seq, path, block_type, surface, event_type, time, length, searchable, hash)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -821,9 +836,15 @@ function createStore(db, path) {
     /**
      * 体积与分表规模:给界面监控用(对照 s-forge 的 `LogDatabaseSize`,它按库打印体积)。
      * `dbBytes` 来自 SQLite 自己的页计数(含未回收页);WAL 与文件级的字节在宿主侧另算。
+     *
+     * **默认走缓存**(见 `createStore` 顶部的说明):这两条聚合是全文扫描,而结果全是慢变量。
+     * @param options - `{ fresh: true }` 绕过缓存(收缩前后对比这类需要精确值的地方用)。
      * @returns `{ path, dbBytes, pageCount, pageSize, textBytes, tables }`。
      */
-    size() {
+    size(options = {}) {
+      if (options.fresh !== true && sizeCache.value !== undefined && Date.now() - sizeCache.at < SIZE_CACHE_MS) {
+        return sizeCache.value;
+      }
       const pageCount = Number(db.prepare("PRAGMA page_count").get().page_count);
       const pageSize = Number(db.prepare("PRAGMA page_size").get().page_size);
       const tables = {};
@@ -833,7 +854,9 @@ function createStore(db, path) {
       // LENGTH() 对 TEXT 返回字符数,要字节得转 BLOB。
       const textBytes = Number(db.prepare("SELECT COALESCE(SUM(LENGTH(CAST(text AS BLOB))), 0) AS b FROM block_fts").get().b)
         + Number(db.prepare("SELECT COALESCE(SUM(LENGTH(CAST(text AS BLOB))), 0) AS b FROM block_text").get().b);
-      return { path, dbBytes: pageCount * pageSize, pageCount, pageSize, textBytes, tables };
+      const value = { path, dbBytes: pageCount * pageSize, pageCount, pageSize, textBytes, tables };
+      sizeCache = { value, at: Date.now() };
+      return value;
     },
     /**
      * 收缩:先做 FTS5 段合并(`INSERT INTO block_fts(block_fts) VALUES('optimize')`),再归还空闲页。
@@ -846,13 +869,14 @@ function createStore(db, path) {
      */
     compact(request = {}) {
       const vacuum = request.vacuum !== false;
-      const before = this.size();
+      // 收缩前后对比必须绕缓存:这里要的就是"这一刻到底多少字节",缓存会把它变成空操作。
+      const before = this.size({ fresh: true });
       db.exec("INSERT INTO block_fts(block_fts) VALUES('optimize')");
-      const optimized = this.size();
+      const optimized = this.size({ fresh: true });
       let after = optimized;
       if (vacuum) {
         db.exec("VACUUM");
-        after = this.size();
+        after = this.size({ fresh: true });
       }
       return {
         beforeBytes: before.dbBytes,
@@ -864,10 +888,20 @@ function createStore(db, path) {
     },
     /**
      * 值不值得收缩:文件字节明显超出正文体量(或超过 4MB 地板)时才建议动手。
+     *
+     * **必须把算好的 `size()` 传进来。** 以前这里自己调 `this.size()`,而 `size()` 里有
+     * 两条随正文总量线性增长的全表扫描(`COUNT(*) FROM block_fts` 要遍历整个倒排、
+     * `SUM(LENGTH(CAST(text AS BLOB)))` 要读出 526MB 正文),实测单次约 1.3 秒。
+     * 面板快照又同时要 `size()` 和 `shouldCompact()`,于是**一次快照把这份成本付了两遍**
+     * (实测 2.6 秒),而 SSE 每 1 秒推一次 —— 请求永远追不上,永久积压。
+     * 缺参数直接抛:替调用方猜一个 size 等于悄悄换掉判断依据,而这里没有便宜的近似值。
+     * @param current - 调用方已经算好的 `size()` 结果。
      * @returns 是否建议收缩。
      */
-    shouldCompact() {
-      const current = this.size();
+    shouldCompact(current) {
+      if (current === undefined || typeof current !== "object") {
+        throw new Error("store.shouldCompact 需要调用方传入 size() 的结果(它自己不再重算:那是两条全表扫描)");
+      }
       return current.dbBytes > Math.max(4 * 1024 * 1024, current.textBytes * 1.6);
     },
     /**

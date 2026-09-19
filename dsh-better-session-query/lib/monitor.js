@@ -231,8 +231,18 @@ export function createMonitorRoute(deps, base) {
         });
         let lastBody = "";
         let closed = false;
+        /**
+         * 上一拍还没跑完时跳过这一拍。
+         *
+         * `setInterval` 不会等 async 回调:`deps.snapshot()` 一旦比间隔慢,每一拍都会**再起一个**
+         * 并发的组装,越堆越多,把事件循环占满(实测快照 2.6 秒 / 间隔 1 秒 —— 永久积压)。
+         * 这里的跳过不是丢数据:快照是"当前状态的完整投影",下一拍拿到的就是最新的,
+         * 中间那些过期的本来也没有意义。
+         */
+        let pushing = false;
         const push = async () => {
-          if (closed) return;
+          if (closed || pushing) return;
+          pushing = true;
           try {
             const body = JSON.stringify(await deps.snapshot());
             if (body === lastBody) return;
@@ -240,10 +250,14 @@ export function createMonitorRoute(deps, base) {
             res.write(`data: ${body}\n\n`);
           } catch {
             // 快照失败不该打死这条流:下一次心跳再试。
+          } finally {
+            pushing = false;
           }
         };
         await push();
-        const timer = setInterval(push, 1000);
+        // 2 秒而不是 1 秒:面板是给人看的,秒级刷新已经远超人的阅读速度;
+        // 而组装虽然已经降到百毫秒级,仍要给足余量(索引正在跑时它会变慢)。
+        const timer = setInterval(push, 2000);
         const heartbeat = setInterval(() => {
           if (!closed) res.write(": keep-alive\n\n");
         }, 15000);

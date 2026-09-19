@@ -97,11 +97,15 @@ test("compact({vacuum:false}):只做 FTS 段合并,不做整库重写", async ()
 test("shouldCompact:小库不催,明显偏大才催", async () => {
   const { path, cleanup } = tempPath("threshold");
   const store = await openStore({ path });
+  // size() 默认走缓存(它里面有两条全文扫描,面板每秒问一次不能每拍重算);
+  // 这个测试每一步都刚改过库、要读当下真实值,所以一律 fresh: true。
+  const measure = () => store.size({ fresh: true });
+  const judge = () => store.shouldCompact(measure());
   try {
-    assert.equal(store.shouldCompact(), false, "空库(4MB 以下)不该被催");
+    assert.equal(judge(), false, "空库(4MB 以下)不该被催");
     store.replaceSession({ sessionId: "small", cwd: null, revision: "r1", events: 300, blocks: blocks("small", 300), now: 1 });
     store.deleteSession("small");
-    assert.equal(store.shouldCompact(), false, "三百块这个量级回收不值得一次 VACUUM(地板是 4MB)");
+    assert.equal(judge(), false, "三百块这个量级回收不值得一次 VACUUM(地板是 4MB)");
     // 造一个超过地板的库,再删空:这时才该建议收缩。
     for (let round = 0; round < 10; round += 1) {
       store.replaceSession({
@@ -114,8 +118,34 @@ test("shouldCompact:小库不催,明显偏大才催", async () => {
       });
     }
     for (let round = 0; round < 10; round += 1) store.deleteSession(`fat-${round}`);
-    assert.ok(store.size().dbBytes > 4 * 1024 * 1024, `先要有超过地板的库:${store.size().dbBytes}`);
-    assert.equal(store.shouldCompact(), true, "块删光了但文件还占着,应当建议收缩");
+    assert.ok(measure().dbBytes > 4 * 1024 * 1024, `先要有超过地板的库:${measure().dbBytes}`);
+    assert.equal(judge(), true, "块删光了但文件还占着,应当建议收缩");
+  } finally {
+    store.close();
+    cleanup();
+  }
+});
+
+test("size():默认走缓存,fresh 绕过缓存", async () => {
+  const { path, cleanup } = tempPath("size-cache");
+  const store = await openStore({ path });
+  try {
+    const first = store.size();
+    assert.equal(store.size(), first, "缓存窗口内返回同一个对象(不是重新算了一遍)");
+    store.replaceSession({ sessionId: "s1", cwd: null, revision: "r1", events: 10, blocks: blocks("s1", 10), now: 1 });
+    assert.equal(store.size().tables.block_meta, first.tables.block_meta, "缓存内看不到刚写进去的块");
+    assert.equal(store.size({ fresh: true }).tables.block_meta, 10, "fresh 必须反映刚写进去的块");
+  } finally {
+    store.close();
+    cleanup();
+  }
+});
+
+test("shouldCompact:缺参数直接抛,不替调用方猜一个 size", async () => {
+  const { path, cleanup } = tempPath("no-size");
+  const store = await openStore({ path });
+  try {
+    assert.throws(() => store.shouldCompact(), /需要调用方传入 size\(\) 的结果/);
   } finally {
     store.close();
     cleanup();
