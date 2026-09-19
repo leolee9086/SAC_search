@@ -230,9 +230,12 @@ export interface SelectFlags {
  * 搜索引擎的价值在召回，但**召回来自引擎的覆盖面、不是引擎的数量**：
  * Google/Bing/百度 已经覆盖了绝大部分公开网页，再叠 100 个垂直引擎
  * 既不会多召回什么，还会拖慢整体、并把噪声顶到排序前面。
- * 要更宽的召回应该**换关键词**或**点名 engines**，而不是无差别全跑。
+ * 要更宽的召回应该**换关键词**，而不是无差别全跑。
  *
- * 需要冷门引擎时传 `engines: ["pubmed"]` 显式指定 —— 那条路径不受这份名单限制。
+ * `engines` 是在这份名单选出之后再做收窄，**不能**引入名单外的引擎：
+ * general 下传 `engines: ["crossref"]` 会直接报「指定的引擎均不存在」。
+ * 要用名单外的引擎得先选对 queryType ——
+ * 实测 `queryType: "academic"` + `engines: ["crossref"]` 可用，11 条结果全是 DOI 文献。
  */
 export const GENERAL_ENGINE_NAMES: readonly string[] = [
   // ── 通用网页搜索（召回主力）──
@@ -2269,9 +2272,12 @@ export function selectEngines(
    *
    * 同时 111 个引擎跑了 31 秒、其中 92 个失败 —— 时间几乎全花在没用的地方。
    *
-   * 需要这些垂直引擎时，有两条正当路径：
-   *   1. 传对应的 queryType（如 academic / shopping）
-   *   2. 传 engines 显式点名（那条路径在本函数之后，不受此名单限制）
+   * 需要这些垂直引擎时，路径是传对应的 queryType（如 academic / shopping）：
+   * 本函数只在 isGeneral 时过滤，其它类型不过滤，它们就能进来。
+   *
+   * 注意 engines 帮不上忙 —— 它在 selectEngines 之后才做收窄，
+   * 名单里没有的名字到那一步已经不存在了，点名只会得到「指定的引擎均不存在」。
+   * （这里原来写的是"不受此名单限制"，与 runner.ts 的实际顺序不符。）
    */
   if (isGeneral) {
     const want = new Set(GENERAL_ENGINE_NAMES)
