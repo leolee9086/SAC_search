@@ -268,6 +268,9 @@ function createMemoryStore(db, path) {
         q: String(row.q),
         a: String(row.a),
         fresh: freshEnough,
+        // bm25 原始值:负数,越小越相关。调用方要判断"够不够格"就得看它,
+        // 光有 ORDER BY rank 只能排序,不能设门槛。
+        score: Number(row.score),
       });
     }
     // 过期的只在数量不够时补齐,而且永远排在新鲜之后——哪怕它字面更相关。
