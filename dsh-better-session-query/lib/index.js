@@ -28,6 +28,7 @@ import { buildMonitorPayload, fileBytes, installMonitor } from "./monitor.js";
 import { createFileLog } from "./logfile.js";
 import { openStore } from "./store.js";
 import { openMemoryStore } from "./memory.js";
+import { NOTICE_RULES, NOTICE_RULES_SERVICE } from "./notice-rules.js";
 
 const name = "dsh-better-session-query";
 const inject = ["sessionQuery", "tools"];
@@ -928,6 +929,8 @@ async function apply(ctx, rawConfig = {}) {
   }
 
   ctx.provide(SERVICE_NAME, service);
+  // 提示规则:只给纯数据。判断谁该提示、以及发起提醒,都是 context_care 的事。
+  ctx.provide(NOTICE_RULES_SERVICE, NOTICE_RULES);
   ctx.effect(() => () => {
     try {
       state.runner?.stop();
@@ -1327,4 +1330,4 @@ async function apply(ctx, rawConfig = {}) {
   }
 }
 
-export { apply, inject, name, SERVICE_NAME };
+export { apply, inject, name, NOTICE_RULES, NOTICE_RULES_SERVICE, SERVICE_NAME };
