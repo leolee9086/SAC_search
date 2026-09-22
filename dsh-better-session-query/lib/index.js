@@ -29,6 +29,7 @@ import { createFileLog } from "./logfile.js";
 import { openStore } from "./store.js";
 import { openMemoryStore } from "./memory.js";
 import { NOTICE_RULES, NOTICE_RULES_SERVICE } from "./notice-rules.js";
+import { createPassiveRecallSource, PASSIVE_RECALL_DEFAULTS, RECALL_SOURCE_NAME } from "./passive-recall.js";
 
 const name = "dsh-better-session-query";
 const inject = ["sessionQuery", "tools"];
@@ -931,6 +932,16 @@ async function apply(ctx, rawConfig = {}) {
   ctx.provide(SERVICE_NAME, service);
   // 提示规则:只给纯数据。判断谁该提示、以及发起提醒,都是 context_care 的事。
   ctx.provide(NOTICE_RULES_SERVICE, NOTICE_RULES);
+  // 被动召回:用户说的话跟以前记过的对得上时,主动推给 context_care。
+  // 用 ctx.inject 而不是 inject 导出 —— context_care 是可选的,没装就不注册,本插件照常工作。
+  ctx.inject(["contextNotices"], (scope) => {
+    const source = createPassiveRecallSource({
+      open: ensureOpen,
+      config: { ...PASSIVE_RECALL_DEFAULTS, ...(config.passiveRecall ?? {}) },
+      log,
+    });
+    return scope.contextNotices.register(RECALL_SOURCE_NAME, source);
+  });
   ctx.effect(() => () => {
     try {
       state.runner?.stop();
@@ -1330,4 +1341,4 @@ async function apply(ctx, rawConfig = {}) {
   }
 }
 
-export { apply, inject, name, NOTICE_RULES, NOTICE_RULES_SERVICE, SERVICE_NAME };
+export { apply, inject, name, NOTICE_RULES, NOTICE_RULES_SERVICE, PASSIVE_RECALL_DEFAULTS, RECALL_SOURCE_NAME, SERVICE_NAME };
