@@ -40,4 +40,36 @@ export const NOTICE_RULES = [
     cooldownMinutes: 0,
     oncePerSurface: true,
   },
+  {
+    id: "memory-idle",
+    // order 比上面那条大:用户明说「记住」时那条措辞更贴切,先让它赢。
+    order: 20,
+    // 跟上面那条同一个 surface:提醒都发生在"用户刚说话"那一刻,不打断助手自己的输出。
+    placement: ["user"],
+    // idle 的语义是「**调用过**这个工具,但已经过了 15 分钟」——
+    // 引擎刻意让「从来没调用过」不命中,否则每个会话开头都会先响一次。
+    when: { idle: { since: "session_blocks_remember", minutes: 15 } },
+    action: {
+      kind: "notify",
+      by: "context-care",
+      say: [
+        "上一次用 session_blocks_remember 记东西,已经是 15 分钟以前了。",
+        "",
+        "回头看一眼这段时间里有没有值得留下的:踩过的坑、定下来的约定、临时结论、人的偏好。",
+        "有就用 session_blocks_remember 记下来,注意这几件事:",
+        "",
+        "- q 写成以后真会拿来搜的措辞,不要写成总结标题 —— 索引是连续子串匹配,换个说法就找不到了。",
+        "- a 只写结论,不写过程。",
+        "- tag 给一两个检索用的关键字(如 环境/约定/踩坑/人),它是检索标签,不是分类。",
+        "- perspective 三选一:superego(做事的方式)/ ego(与人相处的方式)/ id(本能的偏好),凭感觉标,不用纠结。",
+        "",
+        "确实没有值得记的就跳过 —— 不要为了回应这条提醒硬凑一条。",
+      ].join("\n"),
+    },
+    // idle 的条件是「距离上次**记东西**多久」,不是「距离上次**提醒**多久」——
+    // 不压冷却的话 15 分钟一过每一轮都满足条件。这里让它 15 分钟最多响一次。
+    cooldownMinutes: 15,
+    // 同一段用户输入只提醒一次:去重管内容,冷却管时间。
+    oncePerSurface: true,
+  },
 ];
