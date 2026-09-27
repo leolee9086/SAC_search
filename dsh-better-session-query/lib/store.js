@@ -23,7 +23,7 @@
 /** 本插件派生索引的 application id('BSQ1')。 */
 export const STORE_APPLICATION_ID = 0x42535131;
 /** 派生索引 schema 版本;不兼容时原地重建(这个库可以随时删)。 */
-export const STORE_SCHEMA_VERSION = 6;
+export const STORE_SCHEMA_VERSION = 7;
 
 /**
  * 中文召回用的零宽空格:unicode61 把它当分隔符(不出词项),正文与 snippet 都不受影响。
@@ -219,6 +219,34 @@ function ensureSchema(db) {
     ) STRICT
   `);
   db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS block_fts USING fts5(text, tokenize = 'unicode61')");
+  // 属性表:会话日志之外的旁路数据(标记、改写记录之类)。
+  //
+  // **它是原始数据,不是派生索引** —— 丢了不可重建,所以刻意**不写进 OWN_TABLES**:
+  // 上面那段版本不匹配时的 DROP 只清派生表,属性表要活过每一次 schema 升级。
+  //
+  // 定位只用**不可变数据**:seq(事件序号)、block_index(该事件 message.content 的下标)、
+  // 块内字符偏移。刻意不用 block_meta.path —— 那是索引层算出来的派生坐标,
+  // 切块规则一变就漂,标记会跟着错位。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS attribute (
+      id          TEXT PRIMARY KEY,
+      session_id  TEXT,
+      seq         INTEGER,
+      block_index INTEGER,
+      from_pos    INTEGER,
+      to_pos      INTEGER,
+      namespace   TEXT NOT NULL,
+      name        TEXT NOT NULL,
+      value       TEXT NOT NULL,
+      origin      TEXT NOT NULL,
+      visibility  TEXT NOT NULL,
+      created_ms  INTEGER NOT NULL,
+      updated_ms  INTEGER NOT NULL,
+      deleted_ms  INTEGER
+    ) STRICT
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_attribute_target ON attribute(session_id, seq, block_index)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_attribute_ns ON attribute(session_id, namespace, name)");
   db.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
 }
 
@@ -282,6 +310,26 @@ export function buildPredicates(filter = {}) {
   return { sql, params };
 }
 
+/** 属性表的一行转成对象。value 是 JSON;解析不了就抛 —— 坏数据不静默变成 null。 */
+function rowToAttribute(row) {
+  return {
+    id: String(row.id),
+    sessionId: row.session_id === null ? undefined : String(row.session_id),
+    seq: row.seq === null ? undefined : Number(row.seq),
+    blockIndex: row.block_index === null ? undefined : Number(row.block_index),
+    fromPos: row.from_pos === null ? undefined : Number(row.from_pos),
+    toPos: row.to_pos === null ? undefined : Number(row.to_pos),
+    namespace: String(row.namespace),
+    name: String(row.name),
+    value: JSON.parse(String(row.value)),
+    origin: String(row.origin),
+    visibility: String(row.visibility),
+    createdMs: Number(row.created_ms),
+    updatedMs: Number(row.updated_ms),
+    deletedMs: row.deleted_ms === null ? undefined : Number(row.deleted_ms),
+  };
+}
+
 function createStore(db, path) {
   /**
    * `size()` 的结果缓存。
@@ -340,6 +388,22 @@ function createStore(db, path) {
     SELECT block_id, fts_rowid, seq, path, block_type, surface, event_type, time, length, searchable, hash, cwd
     FROM block_meta WHERE session_id = ?
   `);
+  // 属性表:参数里的 NULL 表示"这一维不过滤",所以每一维都要写两遍。
+  const insertAttribute = db.prepare(`
+    INSERT INTO attribute (id, session_id, seq, block_index, from_pos, to_pos, namespace, name, value, origin, visibility, created_ms, updated_ms, deleted_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+  `);
+  const selectAttributes = db.prepare(`
+    SELECT * FROM attribute
+    WHERE (? IS NULL OR session_id = ?)
+      AND (? IS NULL OR namespace = ?)
+      AND (? IS NULL OR seq = ?)
+      AND (? = 1 OR deleted_ms IS NULL)
+    ORDER BY created_ms ASC, id ASC
+    LIMIT ?
+  `);
+  const selectAttributeNamespaces = db.prepare("SELECT DISTINCT namespace FROM attribute ORDER BY namespace");
+  const softDeleteAttribute = db.prepare("UPDATE attribute SET deleted_ms = ?, updated_ms = ? WHERE id = ? AND deleted_ms IS NULL");
   const updateFtsText = db.prepare("UPDATE block_fts SET text = ? WHERE rowid = ?");
   const updateMetaFull = db.prepare(`
     UPDATE block_meta SET path = ?, block_type = ?, cwd = ?, surface = ?, event_type = ?, time = ?, length = ?, searchable = ?, hash = ?, fts_rowid = ?
@@ -410,6 +474,51 @@ function createStore(db, path) {
 
   return {
     path,
+    /**
+     * 写一条属性。返回它的 id。
+     *
+     * 不给默认值:namespace / name / origin / visibility 都由调用方明确表态 ——
+     * 属性表替调用方猜"这条标记该给谁看"是最坏的一种兜底。
+     * id 可以不传,不传就现造一个(同一位置可以挂任意多条,标记天然是多条)。
+     */
+    putAttribute(entry) {
+      const now = Date.now();
+      const id = typeof entry.id === "string" && entry.id !== "" ? entry.id : globalThis.crypto.randomUUID();
+      insertAttribute.run(
+        id,
+        typeof entry.sessionId === "string" && entry.sessionId !== "" ? entry.sessionId : null,
+        Number.isSafeInteger(entry.seq) ? entry.seq : null,
+        Number.isSafeInteger(entry.blockIndex) ? entry.blockIndex : null,
+        Number.isSafeInteger(entry.fromPos) ? entry.fromPos : null,
+        Number.isSafeInteger(entry.toPos) ? entry.toPos : null,
+        entry.namespace,
+        entry.name,
+        JSON.stringify(entry.value === undefined ? null : entry.value),
+        entry.origin,
+        entry.visibility,
+        Number.isSafeInteger(entry.createdMs) ? entry.createdMs : now,
+        now,
+      );
+      return id;
+    },
+    /** 按 sessionId / namespace / seq 过滤;默认不含已软删的。 */
+    listAttributes(filter = {}) {
+      const sessionId = typeof filter.sessionId === "string" && filter.sessionId !== "" ? filter.sessionId : null;
+      const namespace = typeof filter.namespace === "string" && filter.namespace !== "" ? filter.namespace : null;
+      const seq = Number.isSafeInteger(filter.seq) ? filter.seq : null;
+      const limit = Number.isSafeInteger(filter.limit) && filter.limit > 0 ? filter.limit : 500;
+      return selectAttributes
+        .all(sessionId, sessionId, namespace, namespace, seq, seq, filter.includeDeleted === true ? 1 : 0, limit)
+        .map(rowToAttribute);
+    },
+    /** 软删:写 deleted_ms,不真删 —— 标记撤了,它存在过这件事还得留着。 */
+    removeAttribute(id, now = Date.now()) {
+      return Number(softDeleteAttribute.run(now, now, id).changes) > 0;
+    },
+    /** 表里现有哪些 namespace(运行时发现,消费方据此知道该读什么)。 */
+    attributeNamespaces() {
+      return selectAttributeNamespaces.all().map((row) => row.namespace);
+    },
     /** 当前世代:任何会话的块发生变化都会 +1,游标据此判断是否过期。 */
     generation() {
       return Number(stateStmt.get().generation);

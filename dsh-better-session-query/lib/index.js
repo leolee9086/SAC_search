@@ -690,6 +690,36 @@ async function apply(ctx, rawConfig = {}) {
 
   // 服务:并行块索引的对外入口。官方 sessionQuery 不受影响,也不被本服务替代。
   const service = {
+    /**
+     * 写一条属性。属性表是**会话日志之外的旁路数据**(标记、改写记录之类),
+     * 与块索引同一个库,所以能跟块直接 JOIN。
+     *
+     * 索引库不可用时返回 undefined —— 调用方据此退到进程内维护,
+     * 而不是让整件事失败。这是"索引插件在就存它那里,不在就进程内"那条范式的一半。
+     */
+    async putAttribute(entry) {
+      const opened = await ensureOpen();
+      if (opened.store === undefined) return undefined;
+      return opened.store.putAttribute(entry);
+    },
+    /** 按 sessionId / namespace / seq 列属性;默认不含已软删的。 */
+    async listAttributes(filter = {}) {
+      const opened = await ensureOpen();
+      if (opened.store === undefined) return [];
+      return opened.store.listAttributes(filter);
+    },
+    /** 软删一条属性(写 deleted_ms,不真删)。 */
+    async removeAttribute(id) {
+      const opened = await ensureOpen();
+      if (opened.store === undefined) return false;
+      return opened.store.removeAttribute(id);
+    },
+    /** 表里现有哪些 namespace —— 运行时发现,消费方据此知道该读什么。 */
+    async attributeNamespaces() {
+      const opened = await ensureOpen();
+      if (opened.store === undefined) return [];
+      return opened.store.attributeNamespaces();
+    },
     /** 块级检索。 */
     async searchBlocks(request = {}) {
       const opened = await ensureOpen();
