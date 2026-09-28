@@ -2,25 +2,28 @@
 
 **SAC = Stand Alone Complex(攻壳机动队术语)：没有原型的独立复合体。** 命名梗一脉相承自 [SiyuanAssistantCollection](https://github.com/leolee9086/SiyuanAssistantCollection)(表面读作 "Siyuan Assistant Collection"，SAC 实为 Stand Alone Complex 的标准缩写)——本仓库延续同一梗：官方没有给第三方插件预留注册面（没有原型），社区插件自发聚合出同类能力（独立复合体）。本仓库不是任何官方项目的子集，而是一个独立成型的复合体——约 200 个免 API key 搜索引擎自发聚合，在 DeepSeek Harness 上作为自包含插件运行。
 
-本仓库目前有两个插件：
+本仓库曾经把三个插件放在子目录里一起发布。**它们现在各有自己的仓库**，本地工作副本也各自独立；本仓库只保留这段记录与共用的资源（如赞赏码）。
 
-| 插件 | 做什么 |
-|---|---|
-| [`dsh-tool-websearch/`](./dsh-tool-websearch) | **互联网元搜索**：免 API key 直接调用 DuckDuckGo / Bing / Google / 百度 / 搜狗 等约 200 个搜索引擎，并发执行、结果去重聚合、按引擎权重与时效性评分。搜索实现移植自 s-code，构建期打包为自包含 ESM bundle，运行时零依赖。 |
-| [`dsh-tool-everything/`](./dsh-tool-everything) | **本机文件索引检索**：查询 [Everything](https://www.voidtools.com/) 自带的 HTTP 接口，毫秒级按文件名、路径、扩展名、大小、修改时间检索整机文件；`path` 参数可把范围限定在某个目录（自动补尾分隔符，不会连带同前缀的兄弟目录）。索引含整机文件名，所以**审批跟着会话文件权限走**：完全权限直接调用，工作区/只读权限每次调用都过 DSH 审批，审批理由里带本次查询的关键词。零运行时依赖。 |
+| 插件 | 仓库 | 做什么 |
+|---|---|---|
+| `dsh-tool-websearch` | [leolee9086/dsh-tool-websearch](https://github.com/leolee9086/dsh-tool-websearch) | **互联网元搜索**：免 API key 直接调用 DuckDuckGo / Bing / Google / 百度 / 搜狗 等约 200 个搜索引擎，并发执行、结果去重聚合、按引擎权重与时效性评分。搜索实现移植自 s-code，构建期打包为自包含 ESM bundle，运行时零依赖。 |
+| `dsh-tool-everything` | [leolee9086/dsh-tool-everything](https://github.com/leolee9086/dsh-tool-everything) | **本机文件索引检索**：查询 [Everything](https://www.voidtools.com/) 自带的 HTTP 接口，毫秒级按文件名、路径、扩展名、大小、修改时间检索整机文件；`path` 参数可把范围限定在某个目录（自动补尾分隔符，不会连带同前缀的兄弟目录）。索引含整机文件名，所以**审批跟着会话文件权限走**：完全权限直接调用，工作区/只读权限每次调用都过 DSH 审批，审批理由里带本次查询的关键词。零运行时依赖。 |
+| `dsh-better-session-query` | [leolee9086/dsh-better-session-query](https://github.com/leolee9086/dsh-better-session-query) | **会话历史与记忆**：给会话历史再挂一套块级并行索引（一条消息拆成 text / reasoning / tool-call / tool-result 等块，可按块检索与读取），另有记忆（`q` / `a` / `tag` / `expires`）、被动召回与属性表。不替换官方 session-query，不改任何 DSH 源码。 |
 
-两个插件都只通过运行时的 Cordis 服务契约与 DSH 交互，不 import 任何 DSH 包。
+它们都通过 Cordis 服务契约接入 DSH。
+
+**为什么要拆**：子目录里的代码被两个仓库同时跟踪时，一次改动可能提到错误的那个仓库，而两边的历史会各自往前走 —— 拆成"一个插件一个仓库、各自一个工作副本"之后，这类分叉就不会再发生。
 
 ## 安装
 
 需要 Node.js **22.19.0 或更高版本**、pnpm，以及兼容的 DeepSeek Harness Web 环境。
 
-插件包位于 `dsh-tool-websearch/` 子目录，所以**不能**用 `pnpm add 'github:leolee9086/SAC_search#v0.1.0'` 这类 git 依赖形式安装——git 依赖要求 `package.json` 在仓库根，pnpm 会把仓库根当成一个空包（装出 0.0.0 的壳，整个仓库被塞进 `node_modules` 的子目录）。请用下面的 tgz，或把插件目录放进 `$DSH_HOME/plugins/`。
+插件从各自的仓库安装 —— 每个仓库根就是插件包本身，所以 `pnpm add 'github:leolee9086/dsh-tool-websearch'` 这类 git 依赖形式能用（本仓库不再发布插件包）。
 
-从 [Releases](https://github.com/leolee9086/SAC_search/releases) 下载 `dsh-tool-websearch-0.1.1.tgz`，在 DSH Web profile 目录（默认 `~/.dsh/profiles/web`，Windows 通常为 `%USERPROFILE%\.dsh\profiles\web`）执行：
+在 DSH Web profile 目录（默认 `~/.dsh/profiles/web`，Windows 通常为 `%USERPROFILE%\.dsh\profiles\web`）执行：
 
 ```sh
-pnpm add ./dsh-tool-websearch-0.1.1.tgz
+pnpm add 'github:leolee9086/dsh-tool-websearch'
 ```
 
 然后在该 profile 的 `cordis.patch.yml` 中加入下列配置；已有 `insert` 列表时只需向列表追加这一项，不要重复注册：
@@ -52,7 +55,7 @@ pnpm add ./dsh-tool-websearch-0.1.1.tgz
   http_server_allow_file_download=0
   ```
 
-  端口要和插件 `config.port` 一致。细节见 [`dsh-tool-everything/README.md`](./dsh-tool-everything/README.md)。
+  端口要和插件 `config.port` 一致。细节见 [dsh-tool-everything 的 README](https://github.com/leolee9086/dsh-tool-everything#readme)。
 
 ## 用法
 
@@ -68,7 +71,7 @@ web_search_proxy()    # 查看/切换本地代理（探测 127.0.0.1:7890 等本
 
 ## 运行进度
 
-当前实现的进度只保存在插件实例内存里，按 `sessionId + callId` 隔离，每次保留最多五条结果预览；搜索完成、失败、取消或插件卸载时清理，迟到回调不会恢复已清理状态。插件不注册进度投影，也不调用 `Session.append` 写入自定义事件——最终搜索文本仍通过正常工具返回值保存，历史结果卡继续读取该结果。细节见 [`dsh-tool-websearch/README.md`](./dsh-tool-websearch/README.md)。
+当前实现的进度只保存在插件实例内存里，按 `sessionId + callId` 隔离，每次保留最多五条结果预览；搜索完成、失败、取消或插件卸载时清理，迟到回调不会恢复已清理状态。插件不注册进度投影，也不调用 `Session.append` 写入自定义事件——最终搜索文本仍通过正常工具返回值保存，历史结果卡继续读取该结果。细节见 [dsh-tool-websearch 的 README](https://github.com/leolee9086/dsh-tool-websearch#readme)。
 
 ## 两个历史分支
 
